@@ -1,18 +1,22 @@
 use crate::export;
+use crate::file_ops;
 use crate::format::{Unit, format_elapsed, format_size, plural};
 use crate::hash::hash_file;
+use crate::icons::IconStore;
 use crate::item::{ATTR_HIDDEN, Column, Item};
-use crate::list::{ListModel, ListState};
-use crate::platform::{self, DiskUsage, Drive};
+use crate::list::{ListModel, ListState, View};
+use crate::platform::{self, ClipboardFiles, DiskUsage, Drive};
 use crate::query::{self, DateField, DateRule, Query, SummaryEntry, SummaryKind};
 use crate::scan::{Cache, DirNode, ErrorLog, Level, Live, ScanContext, ScanError, SubDir, read_level, scan_tree};
 use crate::settings::Settings;
 use crate::sidebar::Sidebar;
 use crate::ui::{AppWindow, ColumnChoice, ColumnInfo, Crumb, DriveCard, SummaryRow};
 use rayon::prelude::*;
-use slint::{CloseRequestResponse, ComponentHandle, LogicalSize, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use slint::{
+    CloseRequestResponse, ComponentHandle, Image, LogicalSize, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak,
+};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::os::windows::fs::MetadataExt;
@@ -28,6 +32,7 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SEARCH_DELAY: Duration = Duration::from_millis(180);
 const NEARLY_FULL: f32 = 0.9;
+const DRIVE_ICON_SIZE: u32 = 40;
 const BYTES_PER_MEGABYTE: f64 = 1_048_576.0;
 const SUMMARY_KINDS: [SummaryKind; 4] = [
     SummaryKind::Extension,
@@ -48,7 +53,7 @@ enum Location {
 
 enum Message {
     Drives(Vec<Drive>),
-    TreeChildren { parent: PathBuf, names: Vec<String> },
+    TreeChildren { parent: PathBuf, folders: Vec<(String, u32)> },
     Listed { scan: u64, items: Vec<Item>, lives: Arc<Vec<Live>> },
     Unreadable { scan: u64, reason: String },
     Disk { scan: u64, title: String, usage: Option<DiskUsage> },
@@ -58,6 +63,7 @@ enum Message {
     Summary { id: u64, entries: Vec<SummaryEntry> },
     Hashed { run: u64, index: usize, hashes: Option<[String; 4]> },
     Recycled { paths: Vec<PathBuf>, succeeded: bool },
+    Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool },
     RecycleBin(Option<u64>),
 }
 
@@ -65,6 +71,8 @@ struct App {
     ui: Weak<AppWindow>,
     me: rc::Weak<RefCell<App>>,
     list: Rc<ListModel>,
+    icons: Rc<IconStore>,
+    drive_icons_missing: Cell<bool>,
     sidebar: Sidebar,
     settings: Settings,
     cache: Cache,
@@ -90,6 +98,11 @@ struct App {
     hash_run: u64,
     hash_cancel: Arc<AtomicBool>,
     hashes_left: usize,
+    cut_paths: HashSet<PathBuf>,
+    cut_sequence: u32,
+    pending_select: Option<String>,
+    pending_rename: bool,
+    renaming: Option<PathBuf>,
     sender: Sender<Message>,
     receiver: Receiver<Message>,
     workers: Arc<()>,
@@ -179,15 +192,14 @@ fn crumbs_for(location: &Location) -> Vec<Crumb> {
     crumbs
 }
 
-fn list_subfolders(parent: &Path, show_hidden: bool) -> Vec<String> {
+fn list_subfolders(parent: &Path, show_hidden: bool) -> Vec<(String, u32)> {
     let Ok(entries) = fs::read_dir(parent) else { return Vec::new() };
     entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter(|entry| {
-            show_hidden || entry.metadata().is_ok_and(|meta| meta.file_attributes() & ATTR_HIDDEN == 0)
-        })
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter_map(|entry| Some((entry.file_name(), entry.metadata().ok()?.file_attributes())))
+        .filter(|(_, attrs)| show_hidden || attrs & ATTR_HIDDEN == 0)
+        .map(|(name, attrs)| (name.to_string_lossy().to_string(), attrs))
         .collect()
 }
 
@@ -196,7 +208,7 @@ fn disk_label(title: &str, usage: DiskUsage, unit: Unit) -> String {
     format!("{title} {percent}% used · {} free", format_size(usage.free, unit))
 }
 
-fn drive_card(drive: &Drive, unit: Unit) -> DriveCard {
+fn drive_card(drive: &Drive, icon: Image, unit: Unit) -> DriveCard {
     let usage = drive.usage;
     let ratio = usage.map_or(0.0, DiskUsage::used_ratio);
     let detail = match usage {
@@ -207,26 +219,30 @@ fn drive_card(drive: &Drive, unit: Unit) -> DriveCard {
         title: drive.title.as_str().into(),
         detail: detail.into(),
         path: drive.root.to_string_lossy().as_ref().into(),
+        icon,
         ratio,
         nearly_full: ratio > NEARLY_FULL,
     }
 }
 
 impl App {
-    fn new(ui: &AppWindow, me: rc::Weak<RefCell<App>>, settings: Settings) -> Self {
-        let state = ListState::new(
+    fn new(ui: &AppWindow, me: rc::Weak<RefCell<App>>, settings: Settings, icons: Rc<IconStore>) -> Self {
+        let mut state = ListState::new(
             settings.columns.clone(),
             settings.unit,
             settings.sort,
             settings.descending,
             settings.show_hidden,
         );
+        state.view = settings.view;
         let (sender, receiver) = mpsc::channel();
         Self {
             ui: ui.as_weak(),
             me,
-            list: Rc::new(ListModel::new(state)),
-            sidebar: Sidebar::new(),
+            list: Rc::new(ListModel::new(state, icons.clone())),
+            sidebar: Sidebar::new(icons.clone()),
+            icons,
+            drive_icons_missing: Cell::new(false),
             settings,
             cache: Cache::default(),
             drives: Vec::new(),
@@ -251,6 +267,11 @@ impl App {
             hash_run: 0,
             hash_cancel: Arc::default(),
             hashes_left: 0,
+            cut_paths: HashSet::new(),
+            cut_sequence: 0,
+            pending_select: None,
+            pending_rename: false,
+            renaming: None,
             sender,
             receiver,
             workers: Arc::new(()),
@@ -301,15 +322,15 @@ impl App {
     fn handle(&mut self, message: Message) {
         match message {
             Message::Drives(drives) => self.on_drives(drives),
-            Message::TreeChildren { parent, names } => {
-                let next = self.sidebar.set_children(&parent, names);
+            Message::TreeChildren { parent, folders } => {
+                let next = self.sidebar.set_children(&parent, folders);
                 self.load_tree_children(next);
                 self.scroll_sidebar();
             }
             Message::Listed { scan, items, lives } if scan == self.scan_id => self.on_listed(items, lives),
             Message::Unreadable { scan, reason } if scan == self.scan_id => self.on_unreadable(reason),
             Message::Disk { scan, title, usage } if scan == self.scan_id => self.on_disk(&title, usage),
-            Message::Sized { scan, index, node } if scan == self.scan_id => {
+            Message::Sized { scan, index, node } if scan == self.scan_id && !self.showing_results => {
                 self.list.update_item(index, |item| item.apply_totals(&node));
             }
             Message::Finished { scan, path, node, errors, seconds, from_cache } => {
@@ -325,6 +346,7 @@ impl App {
             }
             Message::Hashed { run, index, hashes } if run == self.hash_run => self.on_hashed(index, hashes),
             Message::Recycled { paths, succeeded } => self.on_recycled(&paths, succeeded),
+            Message::Pasted { paths, target, is_cut, succeeded } => self.on_pasted(&paths, &target, is_cut, succeeded),
             Message::RecycleBin(size) => self.show_recycle_bin(size),
             _ => {}
         }
@@ -385,20 +407,27 @@ impl App {
     }
 
     fn show_location(&mut self) {
-        self.stop_work();
-        self.active_query = None;
         self.showing_results = false;
-        self.errors.clear();
         self.summary.clear();
+        self.icons.cancel_queued();
+        self.list.set_items(Vec::new());
         let ui = self.ui();
         ui.set_search_text(SharedString::new());
-        ui.set_in_search_results(false);
+        ui.invoke_scroll_to_top();
+        self.enter_location();
+    }
+
+    fn enter_location(&mut self) {
+        self.stop_work();
+        self.active_query = None;
+        self.errors.clear();
+        let ui = self.ui();
+        ui.set_in_search_results(self.showing_results);
         ui.set_can_go_back(!self.back.is_empty());
         ui.set_can_go_forward(!self.forward.is_empty());
         ui.set_can_go_up(self.location != Location::Computer);
         ui.set_crumbs(ModelRc::new(VecModel::from(crumbs_for(&self.location))));
         ui.set_status_activity(SharedString::new());
-        ui.invoke_scroll_to_top();
         self.sync_columns();
         self.show_errors();
         self.show_summary();
@@ -414,7 +443,7 @@ impl App {
         ui.set_current_path(path.map_or("This PC".into(), |path| path.to_string_lossy().as_ref().into()));
         ui.set_showing_drives(path.is_none());
         ui.set_can_search(path.is_some());
-        self.list.set_items(Vec::new());
+        ui.set_can_edit_folder(path.is_some() && !self.showing_results);
         self.show_selection();
 
         match location {
@@ -432,7 +461,8 @@ impl App {
 
     fn reload(&mut self) {
         let query = self.active_query.clone();
-        self.show_location();
+        self.showing_results &= query.is_some();
+        self.enter_location();
         if let Some(query) = query {
             self.run_query(query);
         }
@@ -486,11 +516,28 @@ impl App {
     }
 
     fn on_listed(&mut self, items: Vec<Item>, lives: Arc<Vec<Live>>) {
+        if self.showing_results {
+            return;
+        }
         self.list.set_items(items);
         self.lives = lives;
         self.ui().set_list_message("This folder is empty.".into());
+        self.restore_cut_marks();
         self.show_selection();
         self.start_hashing();
+        self.apply_pending_selection();
+    }
+
+    fn apply_pending_selection(&mut self) {
+        let Some(name) = self.pending_select.take() else { return };
+        let rename = std::mem::take(&mut self.pending_rename);
+        if let Some(row) = self.list.change_selection(|state| state.select_name(&name)) {
+            self.ui().invoke_reveal_row(row as i32);
+            self.show_selection();
+            if rename {
+                self.begin_rename();
+            }
+        }
     }
 
     fn on_unreadable(&mut self, reason: String) {
@@ -627,11 +674,14 @@ impl App {
         self.sync_columns();
         let ui = self.ui();
         ui.set_in_search_results(true);
+        ui.set_can_edit_folder(false);
         ui.set_list_message("Nothing matches this search.".into());
         ui.set_status_activity(format!("{found} in {:.0} ms", seconds * 1000.0).into());
         ui.invoke_scroll_to_top();
+        self.restore_cut_marks();
         self.show_selection();
         self.start_hashing();
+        self.apply_pending_selection();
     }
 
     // Summary pane
@@ -793,6 +843,11 @@ impl App {
             })
             .collect();
         ui.set_column_choices(ModelRc::new(VecModel::from(choices)));
+        let sort_choices: Vec<ColumnChoice> = Column::DEFAULT
+            .iter()
+            .map(|column| ColumnChoice { title: column.title().into(), shown: *column == sort })
+            .collect();
+        ui.set_sort_choices(ModelRc::new(VecModel::from(sort_choices)));
         if self.list.state().columns != columns {
             self.list.update(|state| state.columns = columns);
         }
@@ -813,6 +868,10 @@ impl App {
 
     fn sort_by(&mut self, index: usize) {
         let Some(column) = self.list.state().columns.get(index).copied() else { return };
+        self.sort_column(column);
+    }
+
+    fn sort_column(&mut self, column: Column) {
         self.list.update(|state| {
             state.descending = if state.sort == column { !state.descending } else { column.starts_descending() };
             state.sort = column;
@@ -839,6 +898,21 @@ impl App {
         self.show_selection();
         self.show_summary();
         self.show_drives();
+    }
+
+    fn choose_view(&mut self, index: usize) {
+        let view = View::ALL[index];
+        self.settings.view = view;
+        self.ui().set_view_index(index as i32);
+        self.icons.cancel_queued();
+        self.list.update(|state| state.view = view);
+    }
+
+    fn refresh_icons(&self) {
+        self.sidebar.refresh_icons();
+        if self.drive_icons_missing.get() {
+            self.show_drives();
+        }
     }
 
     fn toggle_hidden(&mut self) {
@@ -916,7 +990,17 @@ impl App {
     }
 
     fn show_drives(&self) {
-        let cards: Vec<DriveCard> = self.drives.iter().map(|drive| drive_card(drive, self.settings.unit)).collect();
+        let mut missing_icons = false;
+        let cards: Vec<DriveCard> = self
+            .drives
+            .iter()
+            .map(|drive| {
+                let icon = self.icons.location_icon(&drive.root.to_string_lossy(), DRIVE_ICON_SIZE);
+                missing_icons |= icon.is_none();
+                drive_card(drive, icon.unwrap_or_default(), self.settings.unit)
+            })
+            .collect();
+        self.drive_icons_missing.set(missing_icons);
         let ui = self.ui();
         if self.location == Location::Computer {
             ui.set_status_items(plural(cards.len() as u64, "drive").into());
@@ -928,9 +1012,15 @@ impl App {
         let Some(parent) = parent else { return };
         let show_hidden = self.settings.show_hidden;
         self.spawn(move |sender| {
-            let names = list_subfolders(&parent, show_hidden);
-            let _ = sender.send(Message::TreeChildren { parent, names });
+            let folders = list_subfolders(&parent, show_hidden);
+            let _ = sender.send(Message::TreeChildren { parent, folders });
         });
+    }
+
+    fn refresh_tree(&mut self, folder: Option<&Path>) {
+        if let Some(folder) = folder.filter(|folder| self.sidebar.is_expanded(folder)) {
+            self.load_tree_children(Some(folder.to_path_buf()));
+        }
     }
 
     fn tree_opened(&mut self, row: usize) {
@@ -979,9 +1069,9 @@ impl App {
 
     fn list_action(&mut self, action: &str) {
         match action {
-            "copy" => {
-                platform::copy_files(&self.selected_paths());
-            }
+            "cut" => self.cut_selection(),
+            "copy" => self.copy_selection(),
+            "rename" => self.begin_rename(),
             "copy-path" => {
                 let paths: Vec<String> = self.selected_paths().iter().map(|path| path.display().to_string()).collect();
                 platform::copy_text(&paths.join("\r\n"));
@@ -1010,10 +1100,127 @@ impl App {
         }
     }
 
-    fn recycle(&mut self, paths: Vec<PathBuf>) {
+    // File operations
+
+    fn editable_folder(&self) -> Option<PathBuf> {
+        match &self.location {
+            Location::Folder(path) if !self.showing_results => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    fn refresh_can_paste(&self) {
+        self.ui().set_can_paste(self.editable_folder().is_some() && platform::clipboard_has_files());
+    }
+
+    fn cut_selection(&mut self) {
+        let paths = self.selected_paths();
+        if !paths.is_empty() && platform::cut_files(&paths) {
+            self.cut_sequence = platform::clipboard_sequence();
+            self.cut_paths = paths.into_iter().collect();
+            self.show_cut_marks();
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        let paths = self.selected_paths();
+        if !paths.is_empty() && platform::copy_files(&paths) {
+            self.cut_paths.clear();
+            self.show_cut_marks();
+        }
+    }
+
+    fn show_cut_marks(&self) {
+        self.list.update(|state| state.mark_cut(&self.cut_paths));
+    }
+
+    fn restore_cut_marks(&mut self) {
+        if platform::clipboard_sequence() != self.cut_sequence {
+            self.cut_paths.clear();
+        }
+        if !self.cut_paths.is_empty() {
+            self.show_cut_marks();
+        }
+    }
+
+    fn begin_rename(&mut self) {
+        let target = self
+            .list
+            .state()
+            .only_selected()
+            .map(|(row, item)| (row, item.name.to_string(), item.is_dir, item.path()));
+        if let Some((row, name, is_dir, path)) = target {
+            self.renaming = Some(path);
+            let stem = file_ops::editable_stem_length(&name, is_dir);
+            self.ui().invoke_begin_rename(row as i32, name.into(), stem as i32);
+        }
+    }
+
+    fn cancel_rename(&mut self) {
+        self.renaming = None;
+        self.ui().invoke_focus_list();
+    }
+
+    fn on_renamed(&mut self, old: &Path, new: &Path) {
+        let retired = self.cache.rename(old, new);
+        thread::spawn(move || drop(retired));
+        self.pending_select = new.file_name().map(|name| name.to_string_lossy().to_string());
+        self.refresh_tree(new.parent());
+        self.reload();
+    }
+
+    fn on_created(&mut self, parent: &Path, name: String) {
+        self.forget(&parent.join(&name));
+        self.pending_select = Some(name);
+        self.pending_rename = true;
+        self.refresh_tree(Some(parent));
+        self.reload();
+    }
+
+    fn paste(&mut self, files: ClipboardFiles, owner: usize) {
+        let Some(target) = self.editable_folder() else { return };
+        let ClipboardFiles { mut paths, is_cut } = files;
+        if is_cut {
+            paths.retain(|path| path.parent() != Some(target.as_path()));
+        }
+        if paths.is_empty() {
+            return;
+        }
+        self.spawn(move |sender| {
+            let succeeded = match is_cut {
+                true => platform::move_into(&paths, &target, owner),
+                false => platform::copy_into(&paths, &target, owner),
+            };
+            let _ = sender.send(Message::Pasted { paths, target, is_cut, succeeded });
+            let _ = sender.send(Message::RecycleBin(platform::recycle_bin_size()));
+        });
+    }
+
+    fn on_pasted(&mut self, paths: &[PathBuf], target: &Path, is_cut: bool, succeeded: bool) {
+        for path in paths {
+            if let Some(name) = path.file_name() {
+                self.forget(&target.join(name));
+            }
+            if is_cut {
+                self.forget(path);
+                self.refresh_tree(path.parent());
+            }
+        }
+        if is_cut && succeeded {
+            platform::clear_clipboard();
+            self.cut_paths.clear();
+        }
+        self.refresh_tree(Some(target));
+        self.reload();
+        if !succeeded {
+            self.ui().set_status_activity("Some items were not pasted.".into());
+        }
+    }
+
+    fn recycle(&mut self, paths: Vec<PathBuf>, owner: usize) {
         self.cancel_scan();
         self.spawn(move |sender| {
-            let succeeded = platform::recycle(&paths);
+            let succeeded = platform::recycle(&paths, owner);
             let _ = sender.send(Message::Recycled { paths, succeeded });
             let _ = sender.send(Message::RecycleBin(platform::recycle_bin_size()));
         });
@@ -1023,6 +1230,7 @@ impl App {
         for path in paths {
             self.forget(path);
         }
+        self.refresh_tree(paths.first().and_then(|path| path.parent()));
         self.reload();
         if !succeeded {
             self.ui().set_status_activity("Some items could not be moved to the Recycle Bin.".into());
@@ -1078,6 +1286,7 @@ fn activate_row(shared: &Shared, row: usize) {
 }
 
 fn delete_selection(shared: &Shared) {
+    let owner = platform::active_window();
     let paths = shared.borrow().selected_paths();
     let question = match paths.as_slice() {
         [] => return,
@@ -1085,7 +1294,50 @@ fn delete_selection(shared: &Shared) {
         many => format!("Move {} to the Recycle Bin?", plural(many.len() as u64, "item")),
     };
     if platform::confirm("Move to Recycle Bin", &question) {
-        shared.borrow_mut().recycle(paths);
+        shared.borrow_mut().recycle(paths, owner);
+    }
+}
+
+fn describe_rename_error(error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::AlreadyExists => "Something with that name already exists here.".into(),
+        io::ErrorKind::PermissionDenied => "It may be open in another program, or you don't have permission.".into(),
+        _ => error.to_string(),
+    }
+}
+
+fn commit_rename(shared: &Shared, text: &str) {
+    let old = shared.borrow_mut().renaming.take();
+    let ui = shared.borrow().ui();
+    ui.invoke_focus_list();
+    let Some(old) = old else { return };
+    if old.file_name().is_some_and(|current| current == text) {
+        return;
+    }
+    if let Err(reason) = file_ops::validate_name(text) {
+        platform::alert("Can't rename", &reason);
+        return;
+    }
+    let new = old.with_file_name(text);
+    match platform::rename(&old, &new) {
+        Ok(()) => shared.borrow_mut().on_renamed(&old, &new),
+        Err(error) => platform::alert("Can't rename", &describe_rename_error(&error)),
+    }
+}
+
+fn new_folder(shared: &Shared) {
+    let parent = shared.borrow().editable_folder();
+    let Some(parent) = parent else { return };
+    match file_ops::create_new_folder(&parent) {
+        Ok(name) => shared.borrow_mut().on_created(&parent, name),
+        Err(error) => platform::alert("Can't create a folder", &error.to_string()),
+    }
+}
+
+fn paste(shared: &Shared) {
+    let owner = platform::active_window();
+    if let Some(files) = platform::clipboard_files() {
+        shared.borrow_mut().paste(files, owner);
     }
 }
 
@@ -1108,6 +1360,8 @@ fn run_action(shared: &Shared, action: &str) {
         "open" => open_selection(shared),
         "delete" => delete_selection(shared),
         "export" => export_list(shared),
+        "new-folder" => new_folder(shared),
+        "paste" => paste(shared),
         "properties" => {
             let path = shared.borrow().first_selected();
             if let Some(path) = path {
@@ -1133,7 +1387,7 @@ fn wire(ui: &AppWindow, shared: &Shared) {
         ($setter:ident, |$app:ident $(, $argument:ident)*| $body:expr) => {{
             let shared = shared.clone();
             ui.$setter(move |$($argument),*| {
-                let mut $app = shared.borrow_mut();
+                let $app = &mut *shared.borrow_mut();
                 $body;
             });
         }};
@@ -1159,6 +1413,10 @@ fn wire(ui: &AppWindow, shared: &Shared) {
     on!(on_unit_chosen, |app, index| app.choose_unit(index as usize));
     on!(on_column_toggled, |app, choice| app.toggle_column(choice as usize));
     on!(on_hidden_toggled, |app| app.toggle_hidden());
+    on!(on_view_chosen, |app, index| app.choose_view(index as usize));
+    on!(on_sort_chosen, |app, index| app.sort_column(Column::DEFAULT[index as usize]));
+    on!(on_menu_opening, |app| app.refresh_can_paste());
+    on!(on_rename_cancelled, |app| app.cancel_rename());
 
     {
         let shared = shared.clone();
@@ -1188,6 +1446,10 @@ fn wire(ui: &AppWindow, shared: &Shared) {
     }
     {
         let shared = shared.clone();
+        ui.on_rename_committed(move |text| commit_rename(&shared, &text));
+    }
+    {
+        let shared = shared.clone();
         ui.on_action(move |action| run_action(&shared, &action));
     }
     {
@@ -1205,12 +1467,26 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
     let settings = Settings::load();
     ui.window().set_size(LogicalSize::new(settings.window_size.0 as f32, settings.window_size.1 as f32));
     ui.set_unit_index(settings.unit.index() as i32);
+    ui.set_view_index(settings.view.index() as i32);
     ui.set_show_hidden(settings.show_hidden);
     ui.set_summary_open(settings.summary_open);
     ui.set_sidebar_width(settings.sidebar_width);
 
-    let shared: Shared = Rc::new_cyclic(|me| RefCell::new(App::new(&ui, me.clone(), settings)));
+    ui.show()?;
+
+    let icons = IconStore::new();
+    icons.set_scale(ui.window().scale_factor());
+    let shared: Shared = Rc::new_cyclic(|me| RefCell::new(App::new(&ui, me.clone(), settings, icons.clone())));
     wire(&ui, &shared);
+    let (list, me) = (shared.borrow().list.clone(), Rc::downgrade(&shared));
+    icons.set_listener(move || {
+        list.refresh_icons();
+        if let Some(shared) = me.upgrade()
+            && let Ok(app) = shared.try_borrow()
+        {
+            app.refresh_icons();
+        }
+    });
     {
         let mut app = shared.borrow_mut();
         ui.set_rows(ModelRc::from(app.list.clone() as Rc<dyn slint::Model<Data = _>>));
@@ -1222,7 +1498,8 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
         }
         app.show_location();
     }
-    ui.run()
+    slint::run_event_loop()?;
+    ui.hide()
 }
 
 #[cfg(test)]
