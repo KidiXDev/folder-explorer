@@ -1,0 +1,49 @@
+export struct ColumnInfo {
+    title: string,
+    width: length,
+    right-aligned: bool,
+    sort-direction: int,
+}
+
+export struct FileRow {
+    cells: [string],
+    folder: bool,
+    selected: bool,
+    ratio: float,
+    busy: bool,
+    warn: bool,
+    dim: bool,
+}
+
+export struct TreeRow {
+    name: string,
+    depth: int,
+    expanded: bool,
+    expandable: bool,
+    selected: bool,
+    kind: int,
+}
+
+export struct Crumb {
+    name: string,
+    target: string,
+}
+
+export struct DriveCard {
+    title: string,
+    detail: string,
+    path: string,
+    ratio: float,
+    nearly-full: bool,
+}
+
+export struct SummaryRow {
+    label: string,
+    detail: string,
+    ratio: float,
+}
+
+export struct ColumnChoice {
+    title: string,
+    shown: bool,
+}

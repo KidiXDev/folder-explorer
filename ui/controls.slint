@@ -1,0 +1,69 @@
+import { Theme } from "theme.slint";
+
+export component IconButton {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> active;
+    callback clicked();
+
+    width: 34px;
+    height: 34px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: !root.enabled ? transparent
+            : touch.pressed ? Theme.pressed
+            : touch.has-hover || root.active ? Theme.hover
+            : transparent;
+    }
+
+    Image {
+        source: root.icon;
+        width: 18px;
+        height: 18px;
+        colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component UsageBar {
+    in property <float> ratio;
+    in property <bool> nearly-full;
+
+    height: 6px;
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: Theme.track;
+    }
+
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.ratio, 0, 1);
+        border-radius: self.height / 2;
+        background: root.nearly-full ? Theme.danger : Theme.accent;
+    }
+}
+
+export component Label inherits Text {
+    color: Theme.text;
+    font-size: Theme.text-size;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component DimLabel inherits Text {
+    color: Theme.text-dim;
+    font-size: Theme.small-text-size;
+    vertical-alignment: center;
+    overflow: elide;
+}

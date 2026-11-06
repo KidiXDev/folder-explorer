@@ -1,0 +1,235 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ColumnInfo, FileRow } from "types.slint";
+import { DimLabel } from "controls.slint";
+
+component HeaderCell {
+    in property <ColumnInfo> info;
+    callback clicked();
+    callback resized(length);
+
+    width: root.info.width;
+
+    Rectangle {
+        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 4px;
+        alignment: root.info.right-aligned ? end : start;
+
+        DimLabel {
+            text: root.info.title;
+            horizontal-stretch: 0;
+        }
+
+        if root.info.sort-direction != 0: Image {
+            source: root.info.sort-direction > 0 ? @image-url("icons/chevron-up.svg") : @image-url("icons/chevron-down.svg");
+            width: 12px;
+            colorize: Theme.text-dim;
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 1px;
+        y: 7px;
+        width: 1px;
+        height: parent.height - 14px;
+        background: Theme.line;
+    }
+
+    TouchArea {
+        x: parent.width - 5px;
+        width: 8px;
+        mouse-cursor: col-resize;
+        moved => {
+            if (self.pressed) {
+                root.resized(max(56px, root.info.width + self.mouse-x - self.pressed-x));
+            }
+        }
+    }
+}
+
+component Row {
+    in property <FileRow> data;
+    in property <[ColumnInfo]> columns;
+    in property <length> total-width;
+    callback pressed(bool, bool);
+    callback right-pressed(length, length);
+    callback activated();
+
+    height: Theme.row-height;
+    min-width: root.total-width;
+
+    Rectangle {
+        x: 4px;
+        width: root.width - 8px;
+        border-radius: Theme.radius;
+        background: root.data.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+    }
+
+    if root.data.ratio > 0: Rectangle {
+        x: root.columns[0].width + 6px;
+        y: 5px;
+        width: (root.columns[1].width - 12px) * clamp(root.data.ratio, 0, 1);
+        height: parent.height - 10px;
+        border-radius: 3px;
+        background: Theme.accent;
+        opacity: 0.2;
+    }
+
+    Image {
+        x: 12px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: root.data.folder ? @image-url("icons/folder.svg") : @image-url("icons/file.svg");
+        colorize: root.data.folder ? Theme.folder : Theme.text-dim;
+        opacity: root.data.dim ? 0.55 : 1;
+    }
+
+    HorizontalLayout {
+        for column[index] in root.columns: Rectangle {
+            width: column.width;
+
+            Text {
+                x: index == 0 ? 34px : 10px;
+                width: parent.width - self.x - 10px;
+                height: parent.height;
+                text: root.data.cells[index];
+                font-size: Theme.text-size;
+                vertical-alignment: center;
+                horizontal-alignment: column.right-aligned ? right : left;
+                overflow: elide;
+                color: index == 1 && root.data.warn ? Theme.warning
+                    : index == 1 && root.data.busy ? Theme.text-dim
+                    : root.data.dim || index > 1 ? Theme.text-dim
+                    : Theme.text;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                if (event.button == PointerEventButton.left) {
+                    root.pressed(event.modifiers.control, event.modifiers.shift);
+                } else if (event.button == PointerEventButton.right) {
+                    root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        double-clicked => { root.activated(); }
+    }
+}
+
+export component FileTable {
+    in property <[ColumnInfo]> columns;
+    in property <[FileRow]> rows;
+    in property <length> total-width;
+    in property <string> empty-message;
+    callback sort-requested(int);
+    callback column-resized(int, length);
+    callback row-pressed(int, bool, bool);
+    callback row-menu(int, length, length);
+    callback background-menu(length, length);
+    callback background-pressed();
+    callback row-activated(int);
+
+    forward-focus: focus;
+
+    public function reveal-row(row: int) {
+        if (row * Theme.row-height + list.content-y < 0) {
+            list.content-y = 0 - row * Theme.row-height;
+        } else if ((row + 1) * Theme.row-height + list.content-y > list.visible-height) {
+            list.content-y = list.visible-height - (row + 1) * Theme.row-height;
+        }
+    }
+
+    public function scroll-to-top() {
+        list.content-y = 0;
+        list.content-x = 0;
+    }
+
+    public function take-focus() {
+        focus.focus();
+    }
+
+    focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        VerticalLayout {
+            Rectangle {
+                height: 30px;
+                clip: true;
+
+                HorizontalLayout {
+                    x: list.content-x;
+                    width: root.total-width;
+                    height: 30px;
+
+                    for column[index] in root.columns: HeaderCell {
+                        info: column;
+                        clicked => { root.sort-requested(index); }
+                        resized(width) => { root.column-resized(index, width); }
+                    }
+                }
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.line;
+                }
+            }
+
+            Rectangle {
+                TouchArea {
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            focus.focus();
+                            if (event.button == PointerEventButton.left) {
+                                root.background-pressed();
+                            } else if (event.button == PointerEventButton.right) {
+                                root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
+                }
+
+                list := ListView {
+                    width: parent.width;
+                    height: parent.height;
+
+                    for row[index] in root.rows: Row {
+                        data: row;
+                        columns: root.columns;
+                        total-width: root.total-width;
+                        pressed(control, shift) => {
+                            focus.focus();
+                            root.row-pressed(index, control, shift);
+                        }
+                        right-pressed(x, y) => {
+                            focus.focus();
+                            root.row-menu(index, x, y);
+                        }
+                        activated => { root.row-activated(index); }
+                    }
+                }
+
+                if root.rows.length == 0 && root.empty-message != "": DimLabel {
+                    text: root.empty-message;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    width: parent.width - 64px;
+                }
+            }
+        }
+    }
+}

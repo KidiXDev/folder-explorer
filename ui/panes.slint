@@ -1,0 +1,328 @@
+import { ListView, ScrollView, Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { DriveCard, SummaryRow, TreeRow } from "types.slint";
+import { DimLabel, IconButton, Label, UsageBar } from "controls.slint";
+
+component TreeItem {
+    in property <TreeRow> data;
+    callback opened();
+    callback toggled();
+
+    height: Theme.row-height + 2px;
+
+    Rectangle {
+        x: 4px;
+        width: root.width - 8px;
+        height: parent.height - 2px;
+        border-radius: Theme.radius;
+        background: root.data.selected ? Theme.selected : open.has-hover ? Theme.hover : transparent;
+    }
+
+    if root.data.selected: Rectangle {
+        x: 4px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+
+    open := TouchArea {
+        clicked => { root.opened(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px + root.data.depth * 14px;
+        padding-right: 8px;
+        spacing: 4px;
+
+        Rectangle {
+            width: 18px;
+
+            if root.data.expandable: Image {
+                source: root.data.expanded ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                width: 12px;
+                height: 12px;
+                colorize: Theme.text-dim;
+            }
+
+            TouchArea {
+                enabled: root.data.expandable;
+                clicked => { root.toggled(); }
+            }
+        }
+
+        Image {
+            width: 16px;
+            source: root.data.kind == 0 ? @image-url("icons/computer.svg")
+                : root.data.kind == 1 ? @image-url("icons/drive.svg")
+                : @image-url("icons/folder.svg");
+            colorize: root.data.kind == 2 ? Theme.folder : Theme.text-dim;
+        }
+
+        Label {
+            text: root.data.name;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+export component Sidebar {
+    in property <[TreeRow]> rows;
+    callback opened(int);
+    callback toggled(int);
+
+    property <length> item-height: Theme.row-height + 2px;
+
+    public function reveal-row(row: int) {
+        if (row * item-height + list.content-y < 0) {
+            list.content-y = 0 - row * item-height;
+        } else if ((row + 1) * item-height + list.content-y > list.visible-height) {
+            list.content-y = list.visible-height - (row + 3) * item-height;
+        }
+    }
+
+    list := ListView {
+        width: parent.width;
+        height: parent.height;
+
+        for row[index] in root.rows: TreeItem {
+            data: row;
+            opened => { root.opened(index); }
+            toggled => { root.toggled(index); }
+        }
+    }
+}
+
+component DriveTile {
+    in property <DriveCard> drive;
+    callback opened();
+
+    Rectangle {
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.line;
+        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    }
+
+    touch := TouchArea {
+        double-clicked => { root.opened(); }
+    }
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 14px;
+
+        Image {
+            source: @image-url("icons/drive.svg");
+            width: 36px;
+            colorize: Theme.text-dim;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 7px;
+
+            Label {
+                text: root.drive.title;
+                font-weight: 600;
+            }
+
+            UsageBar {
+                ratio: root.drive.ratio;
+                nearly-full: root.drive.nearly-full;
+            }
+
+            DimLabel {
+                text: root.drive.detail;
+            }
+        }
+    }
+}
+
+export component DrivesView {
+    in property <[DriveCard]> drives;
+    callback opened(string);
+
+    property <length> tile-width: 320px;
+    property <length> tile-height: 96px;
+    property <length> gap: 12px;
+    property <int> per-row: max(1, floor((self.width - 2 * gap) / (tile-width + gap)));
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        content-height: ceil(root.drives.length / root.per-row) * (root.tile-height + root.gap) + root.gap;
+
+        for drive[index] in root.drives: DriveTile {
+            x: root.gap + mod(index, root.per-row) * (root.tile-width + root.gap);
+            y: root.gap + floor(index / root.per-row) * (root.tile-height + root.gap);
+            width: root.tile-width;
+            height: root.tile-height;
+            drive: drive;
+            opened => { root.opened(drive.path); }
+        }
+    }
+}
+
+component SummaryTab {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    min-width: text.preferred-width + 16px;
+    height: 28px;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: root.active ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+    }
+
+    text := DimLabel {
+        text: root.label;
+        horizontal-alignment: center;
+        color: root.active ? Theme.text : Theme.text-dim;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component SummaryItem {
+    in property <SummaryRow> data;
+    callback activated();
+
+    height: 40px;
+
+    Rectangle {
+        x: 4px;
+        width: root.width - 8px;
+        border-radius: Theme.radius;
+        background: touch.has-hover ? Theme.hover : transparent;
+    }
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 5px;
+        padding-bottom: 6px;
+        spacing: 3px;
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Label {
+                text: root.data.label;
+                horizontal-stretch: 1;
+            }
+
+            DimLabel {
+                text: root.data.detail;
+                horizontal-stretch: 0;
+                horizontal-alignment: right;
+            }
+        }
+
+        UsageBar {
+            height: 3px;
+            ratio: root.data.ratio;
+        }
+    }
+
+    touch := TouchArea {
+        double-clicked => { root.activated(); }
+    }
+}
+
+export component SummaryPane {
+    in property <[SummaryRow]> rows;
+    in property <int> kind;
+    in property <string> hint;
+    callback kind-chosen(int);
+    callback activated(int);
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 8px;
+            spacing: 2px;
+
+            for label[index] in ["Type", "Modified", "Created", "Accessed"]: SummaryTab {
+                label: label;
+                active: index == root.kind;
+                clicked => { root.kind-chosen(index); }
+            }
+        }
+
+        Rectangle {
+            ListView {
+                width: parent.width;
+                height: parent.height;
+
+                for row[index] in root.rows: SummaryItem {
+                    data: row;
+                    activated => { root.activated(index); }
+                }
+            }
+
+            if root.rows.length == 0: DimLabel {
+                text: root.hint;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                width: parent.width - 32px;
+            }
+        }
+    }
+}
+
+export component ErrorPanel {
+    in property <[string]> errors;
+    callback closed();
+
+    Rectangle {
+        background: Theme.surface;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.line;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000040;
+        drop-shadow-offset-y: 4px;
+    }
+
+    TouchArea { }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            Label {
+                text: "Items that could not be read";
+                font-weight: 600;
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Close";
+                clicked => { root.closed(); }
+            }
+        }
+
+        DimLabel {
+            text: "Sizes that include these items are shown with ≥ because the real total may be larger.";
+            wrap: word-wrap;
+        }
+
+        ListView {
+            for error in root.errors: Rectangle {
+                height: 26px;
+
+                DimLabel {
+                    x: 4px;
+                    width: parent.width - 8px;
+                    text: error;
+                }
+            }
+        }
+    }
+}

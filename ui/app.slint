@@ -1,0 +1,727 @@
+import { CheckBox, ComboBox, LineEdit, Spinner } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
+import { DimLabel, IconButton, Label, UsageBar } from "controls.slint";
+import { FileTable } from "file_table.slint";
+import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
+
+export { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow }
+
+component Breadcrumbs {
+    in property <[Crumb]> crumbs;
+    in property <string> path;
+    callback crumb-clicked(string);
+    callback path-entered(string);
+
+    property <bool> editing;
+
+    public function edit() {
+        root.editing = true;
+        editor.text = root.path;
+        editor.focus();
+        editor.select-all();
+    }
+
+    height: 34px;
+    horizontal-stretch: 1;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+        background: Theme.hover;
+        visible: !root.editing;
+    }
+
+    TouchArea {
+        enabled: !root.editing;
+        clicked => { root.edit(); }
+    }
+
+    Rectangle {
+        clip: true;
+        visible: !root.editing;
+
+        HorizontalLayout {
+            x: min(0px, parent.width - self.preferred-width);
+            width: self.preferred-width;
+            padding-left: 6px;
+            padding-right: 6px;
+            spacing: 0;
+
+            for crumb[index] in root.crumbs: HorizontalLayout {
+                if index > 0: Image {
+                    source: @image-url("icons/chevron-right.svg");
+                    width: 12px;
+                    colorize: Theme.text-faint;
+                }
+
+                Rectangle {
+                    min-width: name.preferred-width + 12px;
+                    horizontal-stretch: 0;
+
+                    Rectangle {
+                        y: 4px;
+                        height: parent.height - 8px;
+                        border-radius: Theme.radius;
+                        background: touch.has-hover ? Theme.pressed : transparent;
+                    }
+
+                    name := Label {
+                        text: crumb.name;
+                        overflow: clip;
+                        horizontal-alignment: center;
+                    }
+
+                    touch := TouchArea {
+                        clicked => { root.crumb-clicked(crumb.target); }
+                    }
+                }
+            }
+        }
+    }
+
+    editor := LineEdit {
+        visible: root.editing;
+        width: parent.width;
+        height: parent.height;
+        accepted(text) => {
+            root.editing = false;
+            root.path-entered(text);
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.editing = false;
+                return accept;
+            }
+            reject
+        }
+        changed has-focus => {
+            if (!self.has-focus) {
+                root.editing = false;
+            }
+        }
+    }
+}
+
+component SearchFilters {
+    in-out property <bool> size-enabled;
+    in-out property <int> size-rule;
+    in-out property <string> size-text;
+    in-out property <bool> date-enabled;
+    in-out property <int> date-field;
+    in-out property <int> date-rule;
+    in-out property <string> date-text;
+    callback changed();
+
+    height: 44px;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 8px;
+        alignment: start;
+
+        CheckBox {
+            text: "Size";
+            checked <=> root.size-enabled;
+            toggled => { root.changed(); }
+        }
+
+        ComboBox {
+            width: 120px;
+            model: ["more than", "less than"];
+            current-index <=> root.size-rule;
+            selected => { root.changed(); }
+        }
+
+        LineEdit {
+            width: 90px;
+            input-type: decimal;
+            placeholder-text: "MB";
+            text <=> root.size-text;
+            edited => { root.changed(); }
+        }
+
+        Rectangle { width: 16px; }
+
+        CheckBox {
+            text: "Date";
+            checked <=> root.date-enabled;
+            toggled => { root.changed(); }
+        }
+
+        ComboBox {
+            width: 120px;
+            model: ["modified", "created", "accessed"];
+            current-index <=> root.date-field;
+            selected => { root.changed(); }
+        }
+
+        ComboBox {
+            width: 100px;
+            model: ["after", "before", "on"];
+            current-index <=> root.date-rule;
+            selected => { root.changed(); }
+        }
+
+        LineEdit {
+            width: 130px;
+            placeholder-text: "YYYY-MM-DD";
+            text <=> root.date-text;
+            edited => { root.changed(); }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Folder Explorer";
+    icon: @image-url("icons/app.svg");
+    min-width: 760px;
+    min-height: 440px;
+    background: Theme.surface;
+    default-font-size: Theme.text-size;
+
+    in property <[ColumnInfo]> columns;
+    in property <[FileRow]> rows;
+    in property <length> columns-width;
+    in property <[TreeRow]> tree-rows;
+    in property <[Crumb]> crumbs;
+    in property <string> current-path;
+    in property <[DriveCard]> drives;
+    in property <[SummaryRow]> summary-rows;
+    in property <int> summary-kind;
+    in property <string> summary-hint;
+    in property <[ColumnChoice]> column-choices;
+    in property <[string]> errors;
+    in property <string> list-message;
+    in property <bool> showing-drives: true;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in property <bool> can-go-up;
+    in property <bool> busy;
+    in property <bool> can-search;
+    in property <string> status-items;
+    in property <string> status-selection;
+    in property <string> status-activity;
+    in property <string> status-errors;
+    in property <string> disk-text;
+    in property <float> disk-ratio;
+    in property <bool> disk-nearly-full;
+    in property <int> selected-count;
+    in property <bool> single-selection;
+    in property <bool> in-search-results;
+    in property <string> recycle-bin-title: "Empty Recycle Bin";
+    in-out property <int> unit-index;
+    in-out property <bool> show-hidden;
+    in-out property <bool> summary-open;
+    in-out property <length> sidebar-width: 240px;
+    in-out property <string> search-text;
+    in-out property <bool> filters-open;
+    in-out property <bool> size-enabled;
+    in-out property <int> size-rule;
+    in-out property <string> size-text;
+    in-out property <bool> date-enabled;
+    in-out property <int> date-field;
+    in-out property <int> date-rule;
+    in-out property <string> date-text;
+
+    callback go-back();
+    callback go-forward();
+    callback go-up();
+    callback refresh-or-stop();
+    callback open-location(string);
+    callback path-entered(string);
+    callback tree-opened(int);
+    callback tree-toggled(int);
+    callback sort-requested(int);
+    callback column-resized(int, length);
+    callback row-pressed(int, bool, bool);
+    callback row-context(int);
+    callback row-activated(int);
+    callback background-pressed();
+    callback cursor-moved(int, bool);
+    callback search-changed();
+    callback summary-kind-chosen(int);
+    callback summary-activated(int);
+    callback unit-chosen(int);
+    callback column-toggled(int);
+    callback hidden-toggled();
+    callback summary-toggled();
+    callback action(string);
+    callback cancel-pressed();
+
+    property <bool> errors-open;
+    property <length> summary-width: 300px;
+
+    public function reveal-row(row: int) {
+        table.reveal-row(row);
+    }
+
+    public function reveal-tree-row(row: int) {
+        sidebar.reveal-row(row);
+    }
+
+    public function scroll-to-top() {
+        table.scroll-to-top();
+    }
+
+    public function focus-list() {
+        table.take-focus();
+    }
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        key-pressed(event) => {
+            if (event.modifiers.alt && event.text == Key.LeftArrow) { root.go-back(); return accept; }
+            if (event.modifiers.alt && event.text == Key.RightArrow) { root.go-forward(); return accept; }
+            if (event.modifiers.alt && event.text == Key.UpArrow) { root.go-up(); return accept; }
+            if (event.text == Key.F5) { root.action("refresh"); return accept; }
+            if (event.text == Key.Escape && root.errors-open) { root.errors-open = false; return accept; }
+            if (event.text == Key.Escape) { root.cancel-pressed(); return accept; }
+            if (event.modifiers.control && (event.text == "f" || event.text == "F")) { search-box.focus(); return accept; }
+            if (event.modifiers.control && (event.text == "l" || event.text == "L")) { breadcrumbs.edit(); return accept; }
+            if (event.text == Key.UpArrow) { root.cursor-moved(-1, event.modifiers.shift); return accept; }
+            if (event.text == Key.DownArrow) { root.cursor-moved(1, event.modifiers.shift); return accept; }
+            if (event.text == Key.PageUp) { root.cursor-moved(-20, event.modifiers.shift); return accept; }
+            if (event.text == Key.PageDown) { root.cursor-moved(20, event.modifiers.shift); return accept; }
+            if (event.text == Key.Home) { root.cursor-moved(-2147483647, event.modifiers.shift); return accept; }
+            if (event.text == Key.End) { root.cursor-moved(2147483647, event.modifiers.shift); return accept; }
+            if (event.text == Key.Return) { root.action("open"); return accept; }
+            if (event.text == Key.Backspace) { root.go-up(); return accept; }
+            if (event.text == Key.Delete) { root.action("delete"); return accept; }
+            if (event.modifiers.control && (event.text == "a" || event.text == "A")) { root.action("select-all"); return accept; }
+            if (event.modifiers.control && (event.text == "c" || event.text == "C")) { root.action("copy"); return accept; }
+            reject
+        }
+
+        VerticalLayout {
+            Rectangle {
+                height: Theme.toolbar-height;
+                background: Theme.panel;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    spacing: 2px;
+
+                    IconButton {
+                        icon: @image-url("icons/back.svg");
+                        label: "Back";
+                        enabled: root.can-go-back;
+                        clicked => { root.go-back(); }
+                    }
+
+                    IconButton {
+                        icon: @image-url("icons/forward.svg");
+                        label: "Forward";
+                        enabled: root.can-go-forward;
+                        clicked => { root.go-forward(); }
+                    }
+
+                    IconButton {
+                        icon: @image-url("icons/up.svg");
+                        label: "Up one level";
+                        enabled: root.can-go-up;
+                        clicked => { root.go-up(); }
+                    }
+
+                    IconButton {
+                        icon: root.busy ? @image-url("icons/stop.svg") : @image-url("icons/refresh.svg");
+                        label: root.busy ? "Stop" : "Refresh";
+                        clicked => { root.refresh-or-stop(); }
+                    }
+
+                    Rectangle { width: 6px; }
+
+                    breadcrumbs := Breadcrumbs {
+                        crumbs: root.crumbs;
+                        path: root.current-path;
+                        crumb-clicked(target) => { root.open-location(target); }
+                        path-entered(text) => { root.path-entered(text); }
+                    }
+
+                    Rectangle { width: 6px; }
+
+                    search-box := LineEdit {
+                        width: 240px;
+                        height: 34px;
+                        enabled: root.can-search;
+                        placeholder-text: "Search this folder";
+                        text <=> root.search-text;
+                        edited => { root.search-changed(); }
+                        accepted => { root.search-changed(); }
+                        key-pressed(event) => {
+                            if (event.text == Key.Escape) {
+                                root.search-text = "";
+                                root.search-changed();
+                                table.take-focus();
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+
+                    IconButton {
+                        icon: @image-url("icons/filter.svg");
+                        label: "Search filters";
+                        active: root.filters-open;
+                        enabled: root.can-search;
+                        clicked => { root.filters-open = !root.filters-open; }
+                    }
+
+                    IconButton {
+                        icon: @image-url("icons/summary.svg");
+                        label: "Summary pane";
+                        active: root.summary-open;
+                        clicked => {
+                            root.summary-open = !root.summary-open;
+                            root.summary-toggled();
+                        }
+                    }
+
+                    IconButton {
+                        icon: @image-url("icons/more.svg");
+                        label: "View options";
+                        clicked => {
+                            view-menu.show({
+                                x: self.absolute-position.x - view-menu.absolute-position.x - 190px,
+                                y: self.absolute-position.y - view-menu.absolute-position.y + self.height,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if root.filters-open: Rectangle {
+                height: 44px;
+                background: Theme.panel;
+
+                SearchFilters {
+                    width: parent.width;
+                    size-enabled <=> root.size-enabled;
+                    size-rule <=> root.size-rule;
+                    size-text <=> root.size-text;
+                    date-enabled <=> root.date-enabled;
+                    date-field <=> root.date-field;
+                    date-rule <=> root.date-rule;
+                    date-text <=> root.date-text;
+                    changed => { root.search-changed(); }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.line;
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+
+                Rectangle {
+                    width: root.sidebar-width;
+                    background: Theme.panel;
+
+                    sidebar := Sidebar {
+                        width: parent.width;
+                        height: parent.height;
+                        rows: root.tree-rows;
+                        opened(index) => { root.tree-opened(index); }
+                        toggled(index) => { root.tree-toggled(index); }
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: Theme.line;
+
+                    TouchArea {
+                        x: -3px;
+                        width: 7px;
+                        mouse-cursor: col-resize;
+                        moved => {
+                            if (self.pressed) {
+                                root.sidebar-width = clamp(root.sidebar-width + self.mouse-x - self.pressed-x, 140px, 520px);
+                            }
+                        }
+                    }
+                }
+
+                view-menu := ContextMenuArea {
+                    horizontal-stretch: 1;
+                    enabled: false;
+
+                    Menu {
+                        Menu {
+                            title: "Size unit";
+                            for title[index] in ["Automatic", "Bytes", "Kilobytes", "Megabytes", "Gigabytes", "Terabytes"]: MenuItem {
+                                title: title;
+                                checkable: true;
+                                checked: index == root.unit-index;
+                                activated => { root.unit-chosen(index); }
+                            }
+                        }
+
+                        Menu {
+                            title: "Columns";
+                            for choice[index] in root.column-choices: MenuItem {
+                                title: choice.title;
+                                checkable: true;
+                                checked: choice.shown;
+                                activated => { root.column-toggled(index); }
+                            }
+                        }
+
+                        MenuItem {
+                            title: "Show hidden items";
+                            checkable: true;
+                            checked: root.show-hidden;
+                            activated => {
+                                root.show-hidden = !root.show-hidden;
+                                root.hidden-toggled();
+                            }
+                        }
+
+                        MenuSeparator { }
+
+                        MenuItem {
+                            title: "Export list…";
+                            enabled: !root.showing-drives;
+                            activated => { root.action("export"); }
+                        }
+
+                        MenuItem {
+                            title: root.recycle-bin-title;
+                            activated => { root.action("empty-bin"); }
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+
+                        if root.showing-drives: DrivesView {
+                            width: parent.width;
+                            height: parent.height;
+                            drives: root.drives;
+                            opened(path) => { root.open-location(path); }
+                        }
+
+                        list-menu := ContextMenuArea {
+                            width: parent.width;
+                            height: parent.height;
+                            enabled: false;
+
+                            Menu {
+                                MenuItem {
+                                    title: "Open";
+                                    enabled: root.selected-count > 0;
+                                    activated => { root.action("open"); }
+                                }
+
+                                MenuItem {
+                                    title: "Open containing folder";
+                                    enabled: root.single-selection && root.in-search-results;
+                                    activated => { root.action("open-location"); }
+                                }
+
+                                MenuItem {
+                                    title: "Show in File Explorer";
+                                    enabled: root.single-selection;
+                                    activated => { root.action("reveal"); }
+                                }
+
+                                MenuSeparator { }
+
+                                MenuItem {
+                                    title: "Copy";
+                                    enabled: root.selected-count > 0;
+                                    activated => { root.action("copy"); }
+                                }
+
+                                MenuItem {
+                                    title: "Copy path";
+                                    enabled: root.selected-count > 0;
+                                    activated => { root.action("copy-path"); }
+                                }
+
+                                MenuSeparator { }
+
+                                MenuItem {
+                                    title: "Select all";
+                                    activated => { root.action("select-all"); }
+                                }
+
+                                MenuItem {
+                                    title: "Invert selection";
+                                    activated => { root.action("select-inverse"); }
+                                }
+
+                                MenuSeparator { }
+
+                                MenuItem {
+                                    title: "Recalculate";
+                                    enabled: root.selected-count > 0 && !root.in-search-results;
+                                    activated => { root.action("recalculate"); }
+                                }
+
+                                MenuItem {
+                                    title: "Refresh";
+                                    activated => { root.action("refresh"); }
+                                }
+
+                                MenuSeparator { }
+
+                                MenuItem {
+                                    title: "Move to Recycle Bin";
+                                    enabled: root.selected-count > 0;
+                                    activated => { root.action("delete"); }
+                                }
+
+                                MenuItem {
+                                    title: "Properties";
+                                    enabled: root.single-selection;
+                                    activated => { root.action("properties"); }
+                                }
+                            }
+
+                            table := FileTable {
+                                width: parent.width;
+                                height: parent.height;
+                                visible: !root.showing-drives;
+                                columns: root.columns;
+                                rows: root.rows;
+                                total-width: root.columns-width;
+                                empty-message: root.list-message;
+                                sort-requested(index) => { root.sort-requested(index); }
+                                column-resized(index, width) => { root.column-resized(index, width); }
+                                row-pressed(index, control, shift) => { root.row-pressed(index, control, shift); }
+                                row-menu(index, x, y) => {
+                                    root.row-context(index);
+                                    list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
+                                }
+                                background-menu(x, y) => {
+                                    list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
+                                }
+                                background-pressed => { root.background-pressed(); }
+                                row-activated(index) => { root.row-activated(index); }
+                            }
+                        }
+                    }
+                }
+
+                if root.summary-open: Rectangle {
+                    width: 1px;
+                    background: Theme.line;
+                }
+
+                if root.summary-open: Rectangle {
+                    width: root.summary-width;
+                    background: Theme.panel;
+
+                    SummaryPane {
+                        width: parent.width;
+                        height: parent.height;
+                        rows: root.summary-rows;
+                        kind: root.summary-kind;
+                        hint: root.summary-hint;
+                        kind-chosen(index) => { root.summary-kind-chosen(index); }
+                        activated(index) => { root.summary-activated(index); }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.line;
+            }
+
+            Rectangle {
+                height: 30px;
+                background: Theme.panel;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 14px;
+
+                    DimLabel {
+                        text: root.status-items;
+                        horizontal-stretch: 0;
+                    }
+
+                    if root.status-selection != "": DimLabel {
+                        text: root.status-selection;
+                        horizontal-stretch: 0;
+                    }
+
+                    if root.busy: Spinner {
+                        width: 14px;
+                        height: 14px;
+                        y: 8px;
+                        indeterminate: true;
+                    }
+
+                    DimLabel {
+                        text: root.status-activity;
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.status-errors != "": Rectangle {
+                        min-width: warning-text.preferred-width + 24px;
+                        horizontal-stretch: 0;
+
+                        Image {
+                            x: 0;
+                            width: 14px;
+                            source: @image-url("icons/warning.svg");
+                            colorize: Theme.warning;
+                        }
+
+                        warning-text := DimLabel {
+                            x: 20px;
+                            color: Theme.warning;
+                            text: root.status-errors;
+                        }
+
+                        TouchArea {
+                            clicked => { root.errors-open = true; }
+                        }
+                    }
+
+                    if root.disk-text != "": HorizontalLayout {
+                        spacing: 8px;
+                        horizontal-stretch: 0;
+
+                        DimLabel {
+                            text: root.disk-text;
+                        }
+
+                        UsageBar {
+                            y: 12px;
+                            width: 90px;
+                            ratio: root.disk-ratio;
+                            nearly-full: root.disk-nearly-full;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.errors-open: ErrorPanel {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(root.width - 80px, 760px);
+        height: min(root.height - 80px, 520px);
+        errors: root.errors;
+        closed => { root.errors-open = false; }
+    }
+}
