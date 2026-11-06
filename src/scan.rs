@@ -29,6 +29,7 @@ impl Times {
     }
 }
 
+#[derive(Clone)]
 pub struct FileEntry {
     name_end: u32,
     pub attrs: u32,
@@ -113,6 +114,22 @@ impl DirNode {
             start = end;
             (name, entry)
         })
+    }
+
+    fn renamed(&self, name: &OsStr) -> Self {
+        Self {
+            name: name.to_string_lossy().into(),
+            attrs: self.attrs,
+            times: self.times,
+            size: self.size,
+            file_count: self.file_count,
+            dir_count: self.dir_count,
+            error_count: self.error_count,
+            complete: self.complete,
+            children: self.children.clone(),
+            entries: self.entries.clone(),
+            names: self.names.clone(),
+        }
     }
 
     fn child(&self, name: &OsStr) -> Option<&Arc<DirNode>> {
@@ -317,6 +334,15 @@ impl Cache {
         retired
     }
 
+    pub fn rename(&mut self, from: &Path, to: &Path) -> Vec<Arc<DirNode>> {
+        let moved = self.get(from);
+        let retired = self.invalidate(from);
+        if let (Some(node), Some(name)) = (moved, to.file_name()) {
+            self.store(to, &Arc::new(node.renamed(name)));
+        }
+        retired
+    }
+
     fn keep_siblings_of(&mut self, path: &Path, root_path: &Path, root: Arc<DirNode>) {
         let mut node = root;
         let mut at = root_path.to_path_buf();
@@ -469,6 +495,32 @@ pub mod tests {
         cache.invalidate(&sub.join("deep"));
         assert!(cache.get(&tree.0).is_none());
         assert!(cache.get(&sub).is_none());
+    }
+
+    #[test]
+    fn renaming_keeps_the_scanned_subtree_under_its_new_name() {
+        let tree = sample();
+        let mut cache = Cache::default();
+        cache.store(&tree.0, &scan(&tree.0));
+        let (from, to) = (tree.0.join("sub"), tree.0.join("renamed"));
+        cache.rename(&from, &to);
+        assert!(cache.get(&from).is_none());
+        assert!(cache.get(&tree.0).is_none());
+        let moved = cache.get(&to).unwrap();
+        assert_eq!((&*moved.name, moved.size, moved.file_count), ("renamed", 50, 2));
+        assert_eq!(cache.get(&to.join("deep")).unwrap().size, 30);
+        assert_eq!(moved.files().next().unwrap().0, "b.txt");
+        assert_eq!(cache.get(&tree.0.join("other")).unwrap().size, 40);
+    }
+
+    #[test]
+    fn renaming_an_unscanned_path_only_drops_stale_ancestors() {
+        let tree = sample();
+        let mut cache = Cache::default();
+        cache.store(&tree.0, &scan(&tree.0));
+        cache.rename(&tree.0.join("a.txt"), &tree.0.join("b.txt"));
+        assert!(cache.get(&tree.0).is_none());
+        assert_eq!(cache.get(&tree.0.join("sub")).unwrap().size, 50);
     }
 
     #[test]
