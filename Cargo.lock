@@ -1273,6 +1273,7 @@ dependencies = [
  "sha2",
  "slint",
  "slint-build",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

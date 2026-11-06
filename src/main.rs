@@ -4,6 +4,7 @@ mod app;
 mod export;
 mod format;
 mod hash;
+mod icons;
 mod item;
 mod list;
 mod platform;

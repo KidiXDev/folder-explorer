@@ -89,7 +89,7 @@ fn contains_ignoring_case(haystack: &str, lowercase_needle: &str) -> bool {
     }
 }
 
-fn extension_of(name: &str) -> String {
+pub fn extension_of(name: &str) -> String {
     match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => extension.to_ascii_lowercase(),
         _ => String::new(),
