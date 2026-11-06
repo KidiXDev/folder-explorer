@@ -1,0 +1,262 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { FileRow } from "types.slint";
+import { DimLabel, FileIcon, Label, RenameBox } from "controls.slint";
+
+component GridCell {
+    in property <FileRow> data;
+    in property <length> icon-size;
+    in property <bool> stacked;
+    in property <bool> tile;
+    callback pressed(bool, bool);
+    callback right-pressed(length, length);
+    callback activated();
+
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: Theme.radius;
+        background: root.data.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+    }
+
+    if root.stacked: VerticalLayout {
+        alignment: start;
+        padding: 8px;
+
+        Rectangle {
+            height: root.icon-size;
+
+            FileIcon {
+                width: root.icon-size;
+                height: root.icon-size;
+                icon: root.data.icon;
+                folder: root.data.folder;
+                dim: root.data.dim;
+            }
+        }
+
+        Text {
+            max-lines: 2;
+            height: self.preferred-height + 8px;
+            vertical-alignment: center;
+            text: root.data.cells[0];
+            color: root.data.dim ? Theme.text-dim : Theme.text;
+            font-size: Theme.text-size;
+            wrap: word-wrap;
+            overflow: elide;
+            horizontal-alignment: center;
+        }
+
+        DimLabel {
+            vertical-stretch: 0;
+            text: root.data.cells[1];
+            color: root.data.warn ? Theme.warning : Theme.text-dim;
+            horizontal-alignment: center;
+        }
+    }
+
+    if !root.stacked: HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        Rectangle {
+            width: root.icon-size;
+
+            FileIcon {
+                width: root.icon-size;
+                height: root.icon-size;
+                icon: root.data.icon;
+                folder: root.data.folder;
+                dim: root.data.dim;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+
+            Label {
+                text: root.data.cells[0];
+                color: root.data.dim ? Theme.text-dim : Theme.text;
+            }
+
+            if root.tile: DimLabel {
+                text: root.data.subtitle;
+            }
+
+            if root.tile: DimLabel {
+                text: root.data.cells[1];
+                color: root.data.warn ? Theme.warning : Theme.text-dim;
+            }
+        }
+
+        if !root.tile: DimLabel {
+            text: root.data.cells[1];
+            color: root.data.warn ? Theme.warning : Theme.text-dim;
+            horizontal-stretch: 0;
+        }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                if (event.button == PointerEventButton.left) {
+                    root.pressed(event.modifiers.control, event.modifiers.shift);
+                } else if (event.button == PointerEventButton.right) {
+                    root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        double-clicked => { root.activated(); }
+    }
+}
+
+export component FileGrid {
+    in property <[FileRow]> rows;
+    in property <int> view;
+    in property <string> empty-message;
+    callback row-pressed(int, bool, bool);
+    callback row-menu(int, length, length);
+    callback background-menu(length, length);
+    callback background-pressed();
+    callback row-activated(int);
+    callback rename-committed(string);
+    callback rename-cancelled();
+
+    property <bool> stacked: root.view <= 2;
+    property <bool> tiles: root.view == 6;
+    property <bool> column-major: root.view == 4;
+    property <length> gutter: 10px;
+    property <length> icon-size: root.view == 0 ? 256px
+        : root.view == 1 ? 96px
+        : root.view == 2 || root.tiles ? 48px
+        : 16px;
+    property <length> cell-width: root.view == 0 ? 280px
+        : root.view == 1 ? 132px
+        : root.view == 2 ? 108px
+        : root.tiles ? 300px
+        : 270px;
+    property <length> cell-height: root.view == 0 ? 332px
+        : root.view == 1 ? 168px
+        : root.view == 2 ? 120px
+        : root.tiles ? 76px
+        : Theme.row-height;
+    property <int> columns: max(1, floor((root.width - 2 * root.gutter - 8px) / root.cell-width));
+    property <int> lines: ceil(root.rows.length / root.columns);
+    property <int> rename-index: -1;
+
+    out property <int> vertical-step: root.column-major ? 1 : root.columns;
+    out property <int> horizontal-step: root.column-major ? root.lines : 1;
+    out property <int> page-step: root.vertical-step * max(1, floor(root.height / root.cell-height));
+
+    forward-focus: focus;
+
+    pure function index-at(line: int, column: int) -> int {
+        return root.column-major ? column * root.lines + line : line * root.columns + column;
+    }
+
+    pure function line-of(index: int) -> int {
+        return root.column-major ? mod(index, max(1, root.lines)) : floor(index / root.columns);
+    }
+
+    pure function column-of(index: int) -> int {
+        return root.column-major ? floor(index / max(1, root.lines)) : mod(index, root.columns);
+    }
+
+    public function reveal-row(index: int) {
+        if (root.line-of(index) * root.cell-height + list.content-y < 0) {
+            list.content-y = 0 - root.line-of(index) * root.cell-height;
+        } else if ((root.line-of(index) + 1) * root.cell-height + list.content-y > list.visible-height) {
+            list.content-y = list.visible-height - (root.line-of(index) + 1) * root.cell-height;
+        }
+    }
+
+    public function scroll-to-top() {
+        list.content-y = 0;
+    }
+
+    public function take-focus() {
+        focus.focus();
+    }
+
+    public function begin-rename(index: int, name: string, selection-end: int) {
+        root.rename-index = index;
+        root.reveal-row(index);
+        rename-box.start(name, selection-end);
+    }
+
+    focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        Rectangle {
+            TouchArea {
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        focus.focus();
+                        if (event.button == PointerEventButton.left) {
+                            root.background-pressed();
+                        } else if (event.button == PointerEventButton.right) {
+                            root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                }
+            }
+
+            list := ListView {
+                width: parent.width;
+                height: parent.height;
+
+                for line in root.lines: Rectangle {
+                    height: root.cell-height;
+
+                    for column in root.columns: slot := Rectangle {
+                        property <int> index: root.index-at(line, column);
+
+                        x: root.gutter + column * root.cell-width;
+                        width: root.cell-width;
+
+                        if slot.index < root.rows.length: GridCell {
+                            width: parent.width;
+                            height: parent.height;
+                            data: root.rows[slot.index];
+                            icon-size: root.icon-size;
+                            stacked: root.stacked;
+                            tile: root.tiles;
+                            pressed(control, shift) => {
+                                focus.focus();
+                                root.row-pressed(slot.index, control, shift);
+                            }
+                            right-pressed(x, y) => {
+                                focus.focus();
+                                root.row-menu(slot.index, x, y);
+                            }
+                            activated => { root.row-activated(slot.index); }
+                        }
+                    }
+                }
+            }
+
+            rename-box := RenameBox {
+                x: root.gutter + root.column-of(root.rename-index) * root.cell-width
+                    + (root.stacked ? 6px : root.icon-size + 18px);
+                y: root.line-of(root.rename-index) * root.cell-height + list.content-y
+                    + (root.stacked ? root.icon-size + 12px : (root.cell-height - self.height) / 2);
+                width: root.cell-width - (root.stacked ? 12px : root.icon-size + 28px);
+                committed(text) => { root.rename-committed(text); }
+                cancelled => { root.rename-cancelled(); }
+            }
+
+            if root.rows.length == 0 && root.empty-message != "": DimLabel {
+                text: root.empty-message;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                width: parent.width - 64px;
+            }
+        }
+    }
+}

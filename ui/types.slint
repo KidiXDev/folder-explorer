@@ -7,6 +7,8 @@ export struct ColumnInfo {
 
 export struct FileRow {
     cells: [string],
+    icon: image,
+    subtitle: string,
     folder: bool,
     selected: bool,
     ratio: float,
@@ -22,6 +24,7 @@ export struct TreeRow {
     expandable: bool,
     selected: bool,
     kind: int,
+    icon: image,
 }
 
 export struct Crumb {
@@ -33,6 +36,7 @@ export struct DriveCard {
     title: string,
     detail: string,
     path: string,
+    icon: image,
     ratio: float,
     nearly-full: bool,
 }

@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnInfo, FileRow } from "types.slint";
-import { DimLabel } from "controls.slint";
+import { DimLabel, FileIcon, RenameBox } from "controls.slint";
 
 component HeaderCell {
     in property <ColumnInfo> info;
@@ -84,14 +84,14 @@ component Row {
         opacity: 0.2;
     }
 
-    Image {
+    FileIcon {
         x: 12px;
         y: (parent.height - self.height) / 2;
         width: 16px;
         height: 16px;
-        source: root.data.folder ? @image-url("icons/folder.svg") : @image-url("icons/file.svg");
-        colorize: root.data.folder ? Theme.folder : Theme.text-dim;
-        opacity: root.data.dim ? 0.55 : 1;
+        icon: root.data.icon;
+        folder: root.data.folder;
+        dim: root.data.dim;
     }
 
     HorizontalLayout {
@@ -141,6 +141,10 @@ export component FileTable {
     callback background-menu(length, length);
     callback background-pressed();
     callback row-activated(int);
+    callback rename-committed(string);
+    callback rename-cancelled();
+
+    property <int> rename-row;
 
     forward-focus: focus;
 
@@ -159,6 +163,12 @@ export component FileTable {
 
     public function take-focus() {
         focus.focus();
+    }
+
+    public function begin-rename(row: int, name: string, selection-end: int) {
+        root.rename-row = row;
+        root.reveal-row(row);
+        rename-box.start(name, selection-end);
     }
 
     focus := FocusScope {
@@ -221,6 +231,14 @@ export component FileTable {
                         }
                         activated => { root.row-activated(index); }
                     }
+                }
+
+                rename-box := RenameBox {
+                    x: 22px + list.content-x;
+                    y: root.rename-row * Theme.row-height + list.content-y;
+                    width: root.columns[0].width - 26px;
+                    committed(text) => { root.rename-committed(text); }
+                    cancelled => { root.rename-cancelled(); }
                 }
 
                 if root.rows.length == 0 && root.empty-message != "": DimLabel {

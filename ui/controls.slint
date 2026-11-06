@@ -1,3 +1,4 @@
+import { LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 export component IconButton {
@@ -32,6 +33,123 @@ export component IconButton {
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+}
+
+export component CommandButton {
+    in property <image> icon;
+    in property <string> text;
+    in property <string> label: root.text;
+    in property <bool> enabled: true;
+    in property <bool> opens-menu;
+    callback clicked();
+
+    height: 32px;
+    min-width: layout.preferred-width;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: !root.enabled ? transparent
+            : touch.pressed ? Theme.pressed
+            : touch.has-hover ? Theme.hover
+            : transparent;
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+
+        Image {
+            source: root.icon;
+            width: 16px;
+            colorize: root.enabled ? Theme.text : Theme.text-faint;
+        }
+
+        if root.text != "": Text {
+            text: root.text;
+            font-size: Theme.text-size;
+            vertical-alignment: center;
+            color: root.enabled ? Theme.text : Theme.text-faint;
+        }
+
+        if root.opens-menu: Image {
+            source: @image-url("icons/chevron-down.svg");
+            width: 10px;
+            colorize: Theme.text-dim;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component FileIcon {
+    in property <image> icon;
+    in property <bool> folder;
+    in property <bool> dim;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        image-fit: contain;
+        source: root.icon.width > 0 ? root.icon
+            : root.folder ? @image-url("icons/folder.svg")
+            : @image-url("icons/file.svg");
+        colorize: root.icon.width > 0 ? transparent : root.folder ? Theme.folder : Theme.text-dim;
+        opacity: root.dim ? 0.5 : 1;
+    }
+}
+
+export component RenameBox {
+    in-out property <bool> active;
+    callback committed(string);
+    callback cancelled();
+
+    public function start(name: string, selection-end: int) {
+        root.active = true;
+        edit.text = name;
+        edit.focus();
+        edit.set-selection-offsets(0, selection-end);
+    }
+
+    visible: root.active;
+    height: 28px;
+
+    Rectangle {
+        border-radius: Theme.radius;
+        background: Theme.surface;
+    }
+
+    edit := LineEdit {
+        width: parent.width;
+        height: parent.height;
+        accepted(text) => {
+            if (root.active) {
+                root.active = false;
+                root.committed(text);
+            }
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.active = false;
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+        changed has-focus => {
+            if (!self.has-focus && root.active) {
+                root.active = false;
+                root.committed(self.text);
+            }
+        }
     }
 }
 

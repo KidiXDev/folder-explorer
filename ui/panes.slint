@@ -54,10 +54,12 @@ component TreeItem {
 
         Image {
             width: 16px;
-            source: root.data.kind == 0 ? @image-url("icons/computer.svg")
+            image-fit: contain;
+            source: root.data.icon.width > 0 ? root.data.icon
+                : root.data.kind == 0 ? @image-url("icons/computer.svg")
                 : root.data.kind == 1 ? @image-url("icons/drive.svg")
                 : @image-url("icons/folder.svg");
-            colorize: root.data.kind == 2 ? Theme.folder : Theme.text-dim;
+            colorize: root.data.icon.width > 0 ? transparent : root.data.kind == 2 ? Theme.folder : Theme.text-dim;
         }
 
         Label {
@@ -114,9 +116,10 @@ component DriveTile {
         spacing: 14px;
 
         Image {
-            source: @image-url("icons/drive.svg");
-            width: 36px;
-            colorize: Theme.text-dim;
+            source: root.drive.icon.width > 0 ? root.drive.icon : @image-url("icons/drive.svg");
+            width: 40px;
+            image-fit: contain;
+            colorize: root.drive.icon.width > 0 ? transparent : Theme.text-dim;
         }
 
         VerticalLayout {

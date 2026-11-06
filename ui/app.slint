@@ -1,7 +1,8 @@
 import { CheckBox, ComboBox, LineEdit, Spinner } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
-import { DimLabel, IconButton, Label, UsageBar } from "controls.slint";
+import { CommandButton, DimLabel, IconButton, Label, UsageBar } from "controls.slint";
+import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
 import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
 
@@ -213,8 +214,12 @@ export component AppWindow inherits Window {
     in property <int> selected-count;
     in property <bool> single-selection;
     in property <bool> in-search-results;
+    in property <bool> can-edit-folder;
+    in property <bool> can-paste;
+    in property <[ColumnChoice]> sort-choices;
     in property <string> recycle-bin-title: "Empty Recycle Bin";
     in-out property <int> unit-index;
+    in-out property <int> view-index: 5;
     in-out property <bool> show-hidden;
     in-out property <bool> summary-open;
     in-out property <length> sidebar-width: 240px;
@@ -252,12 +257,26 @@ export component AppWindow inherits Window {
     callback summary-toggled();
     callback action(string);
     callback cancel-pressed();
+    callback view-chosen(int);
+    callback sort-chosen(int);
+    callback menu-opening();
+    callback rename-committed(string);
+    callback rename-cancelled();
 
     property <bool> errors-open;
     property <length> summary-width: 300px;
+    property <bool> details: root.view-index == 5;
+    property <int> vertical-step: root.details ? 1 : grid.vertical-step;
+    property <int> horizontal-step: root.details ? 0 : grid.horizontal-step;
+    property <int> page-step: root.details ? 20 : grid.page-step;
+    property <[string]> view-titles: ["Extra large icons", "Large icons", "Medium icons", "Small icons", "List", "Details", "Tiles"];
 
     public function reveal-row(row: int) {
-        table.reveal-row(row);
+        if (root.details) {
+            table.reveal-row(row);
+        } else {
+            grid.reveal-row(row);
+        }
     }
 
     public function reveal-tree-row(row: int) {
@@ -266,10 +285,23 @@ export component AppWindow inherits Window {
 
     public function scroll-to-top() {
         table.scroll-to-top();
+        grid.scroll-to-top();
     }
 
     public function focus-list() {
-        table.take-focus();
+        if (root.details) {
+            table.take-focus();
+        } else {
+            grid.take-focus();
+        }
+    }
+
+    public function begin-rename(row: int, name: string, selection-end: int) {
+        if (root.details) {
+            table.begin-rename(row, name, selection-end);
+        } else {
+            grid.begin-rename(row, name, selection-end);
+        }
     }
 
     forward-focus: keys;
@@ -287,10 +319,16 @@ export component AppWindow inherits Window {
             if (event.text == Key.Escape) { root.cancel-pressed(); return accept; }
             if (event.modifiers.control && (event.text == "f" || event.text == "F")) { search-box.focus(); return accept; }
             if (event.modifiers.control && (event.text == "l" || event.text == "L")) { breadcrumbs.edit(); return accept; }
-            if (event.text == Key.UpArrow) { root.cursor-moved(-1, event.modifiers.shift); return accept; }
-            if (event.text == Key.DownArrow) { root.cursor-moved(1, event.modifiers.shift); return accept; }
-            if (event.text == Key.PageUp) { root.cursor-moved(-20, event.modifiers.shift); return accept; }
-            if (event.text == Key.PageDown) { root.cursor-moved(20, event.modifiers.shift); return accept; }
+            if (event.text == Key.F2) { root.action("rename"); return accept; }
+            if (event.modifiers.control && event.modifiers.shift && (event.text == "n" || event.text == "N")) { root.action("new-folder"); return accept; }
+            if (event.modifiers.control && (event.text == "x" || event.text == "X")) { root.action("cut"); return accept; }
+            if (event.modifiers.control && (event.text == "v" || event.text == "V")) { root.action("paste"); return accept; }
+            if (event.text == Key.UpArrow) { root.cursor-moved(0 - root.vertical-step, event.modifiers.shift); return accept; }
+            if (event.text == Key.DownArrow) { root.cursor-moved(root.vertical-step, event.modifiers.shift); return accept; }
+            if (event.text == Key.LeftArrow && root.horizontal-step != 0) { root.cursor-moved(0 - root.horizontal-step, event.modifiers.shift); return accept; }
+            if (event.text == Key.RightArrow && root.horizontal-step != 0) { root.cursor-moved(root.horizontal-step, event.modifiers.shift); return accept; }
+            if (event.text == Key.PageUp) { root.cursor-moved(0 - root.page-step, event.modifiers.shift); return accept; }
+            if (event.text == Key.PageDown) { root.cursor-moved(root.page-step, event.modifiers.shift); return accept; }
             if (event.text == Key.Home) { root.cursor-moved(-2147483647, event.modifiers.shift); return accept; }
             if (event.text == Key.End) { root.cursor-moved(2147483647, event.modifiers.shift); return accept; }
             if (event.text == Key.Return) { root.action("open"); return accept; }
@@ -363,39 +401,177 @@ export component AppWindow inherits Window {
                             if (event.text == Key.Escape) {
                                 root.search-text = "";
                                 root.search-changed();
-                                table.take-focus();
+                                root.focus-list();
                                 return accept;
                             }
                             reject
                         }
                     }
 
-                    IconButton {
-                        icon: @image-url("icons/filter.svg");
-                        label: "Search filters";
-                        active: root.filters-open;
-                        enabled: root.can-search;
-                        clicked => { root.filters-open = !root.filters-open; }
-                    }
+                }
+            }
 
-                    IconButton {
-                        icon: @image-url("icons/summary.svg");
-                        label: "Summary pane";
-                        active: root.summary-open;
-                        clicked => {
-                            root.summary-open = !root.summary-open;
-                            root.summary-toggled();
+            Rectangle {
+                height: 42px;
+                background: Theme.panel;
+
+                layout-menu := ContextMenuArea {
+                    width: parent.width;
+                    height: parent.height;
+                    enabled: false;
+
+                    Menu {
+                        for title[index] in root.view-titles: MenuItem {
+                            title: title;
+                            checkable: true;
+                            checked: index == root.view-index;
+                            activated => { root.view-chosen(index); }
                         }
                     }
 
-                    IconButton {
-                        icon: @image-url("icons/more.svg");
-                        label: "View options";
-                        clicked => {
-                            view-menu.show({
-                                x: self.absolute-position.x - view-menu.absolute-position.x - 190px,
-                                y: self.absolute-position.y - view-menu.absolute-position.y + self.height,
-                            });
+                    sort-menu := ContextMenuArea {
+                        width: parent.width;
+                        height: parent.height;
+                        enabled: false;
+
+                        Menu {
+                            for choice[index] in root.sort-choices: MenuItem {
+                                title: choice.title;
+                                checkable: true;
+                                checked: choice.shown;
+                                activated => { root.sort-chosen(index); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            padding-top: 5px;
+                            padding-bottom: 5px;
+                            spacing: 2px;
+
+                            CommandButton {
+                                icon: @image-url("icons/new-folder.svg");
+                                text: "New folder";
+                                enabled: root.can-edit-folder;
+                                clicked => { root.action("new-folder"); }
+                            }
+
+                            Rectangle {
+                                width: 13px;
+
+                                Rectangle {
+                                    width: 1px;
+                                    height: 20px;
+                                    background: Theme.line;
+                                }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/cut.svg");
+                                label: "Cut";
+                                enabled: root.selected-count > 0;
+                                clicked => { root.action("cut"); }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/copy.svg");
+                                label: "Copy";
+                                enabled: root.selected-count > 0;
+                                clicked => { root.action("copy"); }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/paste.svg");
+                                label: "Paste";
+                                enabled: root.can-edit-folder;
+                                clicked => { root.action("paste"); }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/rename.svg");
+                                label: "Rename";
+                                enabled: root.single-selection;
+                                clicked => { root.action("rename"); }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/delete.svg");
+                                label: "Move to Recycle Bin";
+                                enabled: root.selected-count > 0;
+                                clicked => { root.action("delete"); }
+                            }
+
+                            Rectangle {
+                                width: 13px;
+
+                                Rectangle {
+                                    width: 1px;
+                                    height: 20px;
+                                    background: Theme.line;
+                                }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/sort.svg");
+                                text: "Sort";
+                                opens-menu: true;
+                                enabled: !root.showing-drives;
+                                clicked => {
+                                    sort-menu.show({
+                                        x: self.absolute-position.x - sort-menu.absolute-position.x,
+                                        y: self.absolute-position.y - sort-menu.absolute-position.y + self.height,
+                                    });
+                                }
+                            }
+
+                            CommandButton {
+                                icon: @image-url("icons/view.svg");
+                                text: "View";
+                                opens-menu: true;
+                                clicked => {
+                                    layout-menu.show({
+                                        x: self.absolute-position.x - layout-menu.absolute-position.x,
+                                        y: self.absolute-position.y - layout-menu.absolute-position.y + self.height,
+                                    });
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+
+                            IconButton {
+                                height: 32px;
+                                icon: @image-url("icons/filter.svg");
+                                label: "Search filters";
+                                active: root.filters-open;
+                                enabled: root.can-search;
+                                clicked => { root.filters-open = !root.filters-open; }
+                            }
+
+                            IconButton {
+                                height: 32px;
+                                icon: @image-url("icons/summary.svg");
+                                label: "Summary pane";
+                                active: root.summary-open;
+                                clicked => {
+                                    root.summary-open = !root.summary-open;
+                                    root.summary-toggled();
+                                }
+                            }
+
+                            IconButton {
+                                height: 32px;
+                                icon: @image-url("icons/more.svg");
+                                label: "More options";
+                                clicked => {
+                                    view-menu.show({
+                                        x: self.absolute-position.x - view-menu.absolute-position.x - 190px,
+                                        y: self.absolute-position.y - view-menu.absolute-position.y + self.height,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -541,9 +717,21 @@ export component AppWindow inherits Window {
                                 MenuSeparator { }
 
                                 MenuItem {
+                                    title: "Cut";
+                                    enabled: root.selected-count > 0;
+                                    activated => { root.action("cut"); }
+                                }
+
+                                MenuItem {
                                     title: "Copy";
                                     enabled: root.selected-count > 0;
                                     activated => { root.action("copy"); }
+                                }
+
+                                MenuItem {
+                                    title: "Paste";
+                                    enabled: root.can-paste;
+                                    activated => { root.action("paste"); }
                                 }
 
                                 MenuItem {
@@ -553,6 +741,40 @@ export component AppWindow inherits Window {
                                 }
 
                                 MenuSeparator { }
+
+                                MenuItem {
+                                    title: "Rename";
+                                    enabled: root.single-selection;
+                                    activated => { root.action("rename"); }
+                                }
+
+                                MenuItem {
+                                    title: "New folder";
+                                    enabled: root.can-edit-folder;
+                                    activated => { root.action("new-folder"); }
+                                }
+
+                                MenuSeparator { }
+
+                                Menu {
+                                    title: "View";
+                                    for title[index] in root.view-titles: MenuItem {
+                                        title: title;
+                                        checkable: true;
+                                        checked: index == root.view-index;
+                                        activated => { root.view-chosen(index); }
+                                    }
+                                }
+
+                                Menu {
+                                    title: "Sort by";
+                                    for choice[index] in root.sort-choices: MenuItem {
+                                        title: choice.title;
+                                        checkable: true;
+                                        checked: choice.shown;
+                                        activated => { root.sort-chosen(index); }
+                                    }
+                                }
 
                                 MenuItem {
                                     title: "Select all";
@@ -595,9 +817,9 @@ export component AppWindow inherits Window {
                             table := FileTable {
                                 width: parent.width;
                                 height: parent.height;
-                                visible: !root.showing-drives;
+                                visible: !root.showing-drives && root.details;
                                 columns: root.columns;
-                                rows: root.rows;
+                                rows: root.details ? root.rows : [];
                                 total-width: root.columns-width;
                                 empty-message: root.list-message;
                                 sort-requested(index) => { root.sort-requested(index); }
@@ -605,13 +827,40 @@ export component AppWindow inherits Window {
                                 row-pressed(index, control, shift) => { root.row-pressed(index, control, shift); }
                                 row-menu(index, x, y) => {
                                     root.row-context(index);
+                                    root.menu-opening();
                                     list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
                                 }
                                 background-menu(x, y) => {
+                                    root.menu-opening();
                                     list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
                                 }
                                 background-pressed => { root.background-pressed(); }
                                 row-activated(index) => { root.row-activated(index); }
+                                rename-committed(text) => { root.rename-committed(text); }
+                                rename-cancelled => { root.rename-cancelled(); }
+                            }
+
+                            grid := FileGrid {
+                                width: parent.width;
+                                height: parent.height;
+                                visible: !root.showing-drives && !root.details;
+                                view: root.view-index;
+                                rows: root.details ? [] : root.rows;
+                                empty-message: root.list-message;
+                                row-pressed(index, control, shift) => { root.row-pressed(index, control, shift); }
+                                row-menu(index, x, y) => {
+                                    root.row-context(index);
+                                    root.menu-opening();
+                                    list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
+                                }
+                                background-menu(x, y) => {
+                                    root.menu-opening();
+                                    list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
+                                }
+                                background-pressed => { root.background-pressed(); }
+                                row-activated(index) => { root.row-activated(index); }
+                                rename-committed(text) => { root.rename-committed(text); }
+                                rename-cancelled => { root.rename-cancelled(); }
                             }
                         }
                     }
