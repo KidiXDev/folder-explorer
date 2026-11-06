@@ -1,19 +1,23 @@
+use crate::icons::{IconStore, THIS_PC};
 use crate::item::compare_text;
 use crate::platform::Drive;
 use crate::ui::TreeRow;
-use slint::{ModelRc, SharedString, VecModel};
+use slint::{Image, ModelRc, SharedString, VecModel};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const KIND_COMPUTER: i32 = 0;
 const KIND_DRIVE: i32 = 1;
 const KIND_FOLDER: i32 = 2;
+const ICON_SIZE: u32 = 16;
 
 struct Node {
     path: Option<PathBuf>,
     name: String,
     depth: i32,
     kind: i32,
+    attrs: u32,
     expanded: bool,
     loaded: bool,
 }
@@ -25,15 +29,18 @@ pub struct Sidebar {
     computer_selected: bool,
     target: Option<PathBuf>,
     scroll_pending: bool,
+    icons: Rc<IconStore>,
+    missing_icons: Cell<bool>,
 }
 
 impl Sidebar {
-    pub fn new() -> Self {
+    pub fn new(icons: Rc<IconStore>) -> Self {
         let computer = Node {
             path: None,
             name: "This PC".into(),
             depth: 0,
             kind: KIND_COMPUTER,
+            attrs: 0,
             expanded: true,
             loaded: true,
         };
@@ -44,6 +51,8 @@ impl Sidebar {
             computer_selected: true,
             target: None,
             scroll_pending: false,
+            icons,
+            missing_icons: Cell::new(false),
         };
         sidebar.sync();
         sidebar
@@ -54,8 +63,27 @@ impl Sidebar {
     }
 
     fn sync(&self) {
+        self.missing_icons.set(false);
         let rows: Vec<TreeRow> = (0..self.nodes.len()).map(|index| self.row(index)).collect();
         self.model.set_vec(rows);
+    }
+
+    pub fn refresh_icons(&self) {
+        if self.missing_icons.get() {
+            self.sync();
+        }
+    }
+
+    fn icon(&self, node: &Node) -> Image {
+        let icon = match &node.path {
+            None => self.icons.location_icon(THIS_PC, ICON_SIZE),
+            Some(path) if node.kind == KIND_DRIVE => self.icons.location_icon(&path.to_string_lossy(), ICON_SIZE),
+            Some(path) => self.icons.folder_icon(path, node.attrs, ICON_SIZE),
+        };
+        if icon.is_none() {
+            self.missing_icons.set(true);
+        }
+        icon.unwrap_or_default()
     }
 
     fn row(&self, index: usize) -> TreeRow {
@@ -72,6 +100,7 @@ impl Sidebar {
             expandable: !node.loaded || has_children,
             selected,
             kind: node.kind,
+            icon: self.icon(node),
         }
     }
 
@@ -82,6 +111,7 @@ impl Sidebar {
             name: drive.title.clone(),
             depth: 1,
             kind: KIND_DRIVE,
+            attrs: 0,
             expanded: false,
             loaded: false,
         }));
@@ -125,20 +155,25 @@ impl Sidebar {
         self.nodes[row].loaded = false;
     }
 
-    pub fn set_children(&mut self, parent: &Path, mut names: Vec<String>) -> Option<PathBuf> {
+    pub fn is_expanded(&self, path: &Path) -> bool {
+        self.nodes.iter().any(|node| node.expanded && node.path.as_deref() == Some(path))
+    }
+
+    pub fn set_children(&mut self, parent: &Path, mut folders: Vec<(String, u32)>) -> Option<PathBuf> {
         let Some(row) = self.nodes.iter().position(|node| node.path.as_deref() == Some(parent)) else {
             return self.advance();
         };
         if self.nodes[row].expanded {
             self.collapse(row);
         }
-        names.sort_by(|a, b| compare_text(a, b));
+        folders.sort_by(|(a, _), (b, _)| compare_text(a, b));
         let depth = self.nodes[row].depth + 1;
-        let children = names.into_iter().map(|name| Node {
+        let children = folders.into_iter().map(|(name, attrs)| Node {
             path: Some(parent.join(&name)),
             name,
             depth,
             kind: KIND_FOLDER,
+            attrs,
             expanded: false,
             loaded: false,
         });
