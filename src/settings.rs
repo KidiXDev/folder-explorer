@@ -1,5 +1,6 @@
 use crate::format::Unit;
 use crate::item::Column;
+use crate::list::View;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub unit: Unit,
+    pub view: View,
     pub show_hidden: bool,
     pub summary_open: bool,
     pub columns: Vec<Column>,
@@ -21,6 +23,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             unit: Unit::Auto,
+            view: View::default(),
             show_hidden: true,
             summary_open: false,
             columns: Column::DEFAULT.to_vec(),
@@ -78,6 +81,11 @@ impl Settings {
                     self.unit = *unit;
                 }
             }
+            "view" => {
+                if let Some(view) = value.parse().ok().and_then(|index: usize| View::ALL.get(index)) {
+                    self.view = *view;
+                }
+            }
             "show_hidden" => self.show_hidden = value == "true",
             "summary_open" => self.summary_open = value == "true",
             "columns" => {
@@ -119,8 +127,9 @@ impl Settings {
         widths.sort_by_key(|(id, _)| **id);
         let widths: Vec<String> = widths.iter().map(|(id, width)| format!("{id}:{width}")).collect();
         format!(
-            "unit={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_size={}x{}\n",
+            "unit={}\nview={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_size={}x{}\n",
             self.unit.index(),
+            self.view.index(),
             self.show_hidden,
             self.summary_open,
             columns.join(","),
@@ -142,6 +151,7 @@ mod tests {
     fn settings_survive_a_round_trip() {
         let mut settings = Settings {
             unit: Unit::Gigabytes,
+            view: View::Tiles,
             show_hidden: false,
             summary_open: true,
             columns: vec![Column::Name, Column::Size, Column::Sha256],
@@ -157,9 +167,10 @@ mod tests {
 
     #[test]
     fn broken_files_fall_back_to_defaults() {
-        let garbage = "unit=99\ncolumns=abc\nwindow_size=wide\nsort=-1\nnonsense\n=\n";
+        let garbage = "unit=99\nview=99\ncolumns=abc\nwindow_size=wide\nsort=-1\nnonsense\n=\n";
         let settings = Settings::parse(garbage);
         assert_eq!(settings.unit, Unit::Auto);
+        assert_eq!(settings.view, View::Details);
         assert_eq!(settings.window_size, (1180, 720));
         assert_eq!(settings.columns, [Column::Name, Column::Size]);
     }
