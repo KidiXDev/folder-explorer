@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::mem::{size_of, transmute, zeroed};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{copy_nonoverlapping, null, null_mut};
@@ -9,9 +10,12 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, MAX_PATH, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
-    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, MoveFileW,
 };
-use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
@@ -23,8 +27,8 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_HIDEREADONLY, OFN_OVERWRITEPROMPT, OPENFILENAMEW,
 };
 use windows_sys::Win32::UI::Shell::{
-    DROPFILES, FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_WANTNUKEWARNING, SEE_MASK_INVOKEIDLIST,
-    SHELLEXECUTEINFOW, SHEmptyRecycleBinW, SHFILEOPSTRUCTW, SHFileOperationW, SHQUERYRBINFO, SHQueryRecycleBinW,
+    DROPFILES, DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_RENAMEONCOLLISION,
+    FOF_WANTNUKEWARNING, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHEmptyRecycleBinW, SHFILEOPSTRUCTW, SHFileOperationW, SHQUERYRBINFO, SHQueryRecycleBinW,
     ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -38,6 +42,9 @@ const DRIVE_CDROM: u32 = 5;
 const SET_PREFERRED_APP_MODE_ORDINAL: usize = 135;
 const FLUSH_MENU_THEMES_ORDINAL: usize = 136;
 const APP_MODE_ALLOW_DARK: i32 = 1;
+const DROP_EFFECT_COPY: u32 = 1;
+const DROP_EFFECT_MOVE: u32 = 2;
+const ALL_DROPPED_FILES: u32 = u32::MAX;
 
 fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
     text.as_ref().encode_wide().chain([0]).collect()
@@ -193,15 +200,45 @@ pub fn reveal_in_explorer(path: &Path) {
     let _ = Command::new("explorer.exe").raw_arg(argument).spawn();
 }
 
-pub fn recycle(paths: &[PathBuf]) -> bool {
+pub fn active_window() -> usize {
+    unsafe { GetActiveWindow() as usize }
+}
+
+fn shell_operation(function: u32, paths: &[PathBuf], target: Option<&Path>, flags: u32, owner: usize) -> bool {
     let mut from: Vec<u16> = paths.iter().flat_map(wide).collect();
     from.push(0);
+    let mut to: Vec<u16> = target.map(wide).unwrap_or_default();
+    to.push(0);
     let mut operation: SHFILEOPSTRUCTW = unsafe { zeroed() };
-    operation.wFunc = FO_DELETE;
+    operation.hwnd = owner as _;
+    operation.wFunc = function;
     operation.pFrom = from.as_ptr();
-    operation.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING) as u16;
+    operation.pTo = to.as_ptr();
+    operation.fFlags = flags as u16;
     let failed = unsafe { SHFileOperationW(&mut operation) };
     failed == 0 && operation.fAnyOperationsAborted == 0
+}
+
+pub fn recycle(paths: &[PathBuf], owner: usize) -> bool {
+    shell_operation(FO_DELETE, paths, None, FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING, owner)
+}
+
+pub fn copy_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
+    let same_folder = paths.iter().any(|path| path.parent() == Some(target));
+    let collision = if same_folder { FOF_RENAMEONCOLLISION } else { 0 };
+    shell_operation(FO_COPY, paths, Some(target), FOF_ALLOWUNDO | collision, owner)
+}
+
+pub fn move_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
+    shell_operation(FO_MOVE, paths, Some(target), FOF_ALLOWUNDO, owner)
+}
+
+pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    let (from, to) = (wide(from), wide(to));
+    match unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } {
+        0 => Err(io::Error::last_os_error()),
+        _ => Ok(()),
+    }
 }
 
 pub fn recycle_bin_size() -> Option<u64> {
@@ -215,7 +252,7 @@ pub fn empty_recycle_bin() {
     unsafe { SHEmptyRecycleBinW(null_mut(), null(), 0) };
 }
 
-fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
+unsafe fn store_clipboard_entry(format: u32, bytes: &[u8]) -> bool {
     unsafe {
         let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         if memory.is_null() {
@@ -228,16 +265,22 @@ fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
         }
         copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
         GlobalUnlock(memory);
-        if OpenClipboard(null_mut()) == 0 {
-            GlobalFree(memory);
-            return false;
-        }
-        EmptyClipboard();
         let stored = !SetClipboardData(format, memory).is_null();
-        CloseClipboard();
         if !stored {
             GlobalFree(memory);
         }
+        stored
+    }
+}
+
+fn set_clipboard(entries: &[(u32, &[u8])]) -> bool {
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return false;
+        }
+        EmptyClipboard();
+        let stored = entries.iter().all(|(format, bytes)| store_clipboard_entry(*format, bytes));
+        CloseClipboard();
         stored
     }
 }
@@ -248,10 +291,14 @@ fn wide_bytes(units: &[u16]) -> impl Iterator<Item = u8> {
 
 pub fn copy_text(text: &str) -> bool {
     let bytes: Vec<u8> = wide_bytes(&wide(text)).collect();
-    set_clipboard(CF_UNICODETEXT as u32, &bytes)
+    set_clipboard(&[(CF_UNICODETEXT as u32, &bytes)])
 }
 
-pub fn copy_files(paths: &[PathBuf]) -> bool {
+fn drop_effect_format() -> u32 {
+    unsafe { RegisterClipboardFormatW(wide("Preferred DropEffect").as_ptr()) }
+}
+
+fn put_files_on_clipboard(paths: &[PathBuf], drop_effect: u32) -> bool {
     let mut names: Vec<u16> = paths.iter().flat_map(wide).collect();
     names.push(0);
     let mut header: DROPFILES = unsafe { zeroed() };
@@ -261,7 +308,83 @@ pub fn copy_files(paths: &[PathBuf]) -> bool {
         std::slice::from_raw_parts((&raw const header).cast::<u8>(), size_of::<DROPFILES>())
     };
     let bytes: Vec<u8> = header_bytes.iter().copied().chain(wide_bytes(&names)).collect();
-    set_clipboard(CF_HDROP as u32, &bytes)
+    set_clipboard(&[(CF_HDROP as u32, &bytes), (drop_effect_format(), &drop_effect.to_le_bytes())])
+}
+
+pub fn copy_files(paths: &[PathBuf]) -> bool {
+    put_files_on_clipboard(paths, DROP_EFFECT_COPY)
+}
+
+pub fn cut_files(paths: &[PathBuf]) -> bool {
+    put_files_on_clipboard(paths, DROP_EFFECT_MOVE)
+}
+
+pub fn clipboard_has_files() -> bool {
+    unsafe { IsClipboardFormatAvailable(CF_HDROP as u32) != 0 }
+}
+
+pub fn clipboard_sequence() -> u32 {
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+pub fn clear_clipboard() {
+    unsafe {
+        if OpenClipboard(null_mut()) != 0 {
+            EmptyClipboard();
+            CloseClipboard();
+        }
+    }
+}
+
+pub struct ClipboardFiles {
+    pub paths: Vec<PathBuf>,
+    pub is_cut: bool,
+}
+
+unsafe fn dropped_paths(drop: HDROP) -> Vec<PathBuf> {
+    unsafe {
+        let count = DragQueryFileW(drop, ALL_DROPPED_FILES, null_mut(), 0);
+        (0..count)
+            .map(|index| {
+                let length = DragQueryFileW(drop, index, null_mut(), 0) as usize;
+                let mut name = vec![0u16; length + 1];
+                DragQueryFileW(drop, index, name.as_mut_ptr(), name.len() as u32);
+                name.truncate(length);
+                PathBuf::from(std::ffi::OsString::from_wide(&name))
+            })
+            .collect()
+    }
+}
+
+unsafe fn clipboard_drop_effect() -> u32 {
+    unsafe {
+        let memory = GetClipboardData(drop_effect_format());
+        if memory.is_null() {
+            return DROP_EFFECT_COPY;
+        }
+        let value = GlobalLock(memory).cast::<u32>();
+        if value.is_null() {
+            return DROP_EFFECT_COPY;
+        }
+        let effect = value.read_unaligned();
+        GlobalUnlock(memory);
+        effect
+    }
+}
+
+pub fn clipboard_files() -> Option<ClipboardFiles> {
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return None;
+        }
+        let drop = GetClipboardData(CF_HDROP as u32);
+        let files = (!drop.is_null()).then(|| ClipboardFiles {
+            paths: dropped_paths(drop),
+            is_cut: clipboard_drop_effect() & DROP_EFFECT_MOVE != 0,
+        });
+        CloseClipboard();
+        files
+    }
 }
 
 pub fn confirm(title: &str, message: &str) -> bool {
