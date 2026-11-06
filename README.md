@@ -7,12 +7,15 @@ Browse like you would in File Explorer, and every folder shows its true size, fi
 ## Features
 
 - **Folder sizes everywhere**: size, file count and folder count for every folder, filling in live as the scan runs
+- **Views**: extra large, large, medium and small icons, list, details and tiles, with sizes shown in all of them
+- **Thumbnails and real icons**: image and video thumbnails plus the same icons Windows shows, loaded in the background
+- **File management**: new folder, inline rename, cut, copy and paste that work with File Explorer
 - **Instant search**: searches the scanned tree in memory, with filters for size and for modified, created or accessed date
 - **Summary pane**: see what fills a folder by file type or by age, then double-click a row to list those files
 - **Checksums**: MD5, SHA-1, SHA-256 and SHA-512 columns
 - **Size units**: automatic, or fixed bytes, KB, MB, GB or TB
 - **Export**: save the list as comma, tab, semicolon, pipe or tilde separated text
-- **File actions**: open, copy, copy path, move to Recycle Bin, properties, show in File Explorer
+- **File actions**: open, copy path, move to Recycle Bin, properties, show in File Explorer
 - **Drive overview**: usage for every drive, plus a usage bar for the current drive
 - **Honest totals**: folders that could not be fully read are marked with `≥`, and the unreadable items are listed
 - **Light and dark mode** that follow Windows
@@ -33,6 +36,7 @@ How it stays fast:
 - File metadata comes straight from the directory listing, with no extra call per file
 - One scan feeds everything: sizes, search and summaries all read the same in-memory tree
 - The list is virtual, so a million search results cost nothing until they scroll into view
+- Icons and thumbnails load only for what is on screen, newest first, on their own threads
 - Results from a scan are kept, so browsing into a scanned folder needs no rescan
 
 Keeping the tree in memory has a cost: about 115 bytes per file, or 225 MB for 2 million files. Very large search results add more on top of that until you leave the results.
@@ -71,7 +75,9 @@ cargo test
 | Ctrl+F | Search |
 | Ctrl+L | Edit the path |
 | Ctrl+A | Select all |
-| Ctrl+C | Copy |
+| F2 | Rename |
+| Ctrl+Shift+N | New folder |
+| Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste |
 | Delete | Move to Recycle Bin |
 
 ## Project layout
@@ -83,6 +89,8 @@ cargo test
 | `src/list.rs` | Virtual list model: sorting and selection |
 | `src/item.rs` | List rows and column definitions |
 | `src/app.rs` | Application state and background jobs |
+| `src/icons.rs` | Shell icons and thumbnails, loaded in the background |
+| `src/file_ops.rs` | Name checks and new folders |
 | `src/platform.rs` | Windows integration |
 | `ui/` | Slint interface and icons |
 
