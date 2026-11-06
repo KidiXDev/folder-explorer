@@ -112,7 +112,7 @@ impl Item {
         }
     }
 
-    fn type_label(&self) -> String {
+    pub fn type_label(&self) -> String {
         match (self.is_dir, self.extension()) {
             (true, _) => "Folder".into(),
             (false, "") => "File".into(),

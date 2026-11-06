@@ -1,15 +1,53 @@
 use crate::format::Unit;
+use crate::icons::IconStore;
 use crate::item::{Column, Item, ItemState};
 use crate::scan::Live;
 use crate::ui::FileRow;
 use rayon::prelude::*;
-use slint::{Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
+use slint::{Image, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::cell::{Ref, RefCell};
 use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::Ordering::Relaxed;
 
 const RESET_THRESHOLD: usize = 512;
 const NOT_SHOWN: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    ExtraLarge,
+    Large,
+    Medium,
+    Small,
+    List,
+    #[default]
+    Details,
+    Tiles,
+}
+
+impl View {
+    pub const ALL: [View; 7] =
+        [View::ExtraLarge, View::Large, View::Medium, View::Small, View::List, View::Details, View::Tiles];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|view| *view == self).unwrap_or(0)
+    }
+
+    fn icon_size(self) -> u32 {
+        match self {
+            View::ExtraLarge => 256,
+            View::Large => 96,
+            View::Medium | View::Tiles => 48,
+            View::Small | View::List | View::Details => 16,
+        }
+    }
+
+    fn shows_thumbnails(self) -> bool {
+        self.icon_size() >= 48
+    }
+}
 
 pub struct ListState {
     pub items: Vec<Item>,
@@ -18,9 +56,11 @@ pub struct ListState {
     pub sort: Column,
     pub descending: bool,
     pub show_hidden: bool,
+    pub view: View,
     order: Vec<u32>,
     rows: Vec<u32>,
     selected: Vec<bool>,
+    cut: Vec<bool>,
     anchor: usize,
     cursor: usize,
     total_size: u64,
@@ -36,9 +76,11 @@ impl ListState {
             sort,
             descending,
             show_hidden,
+            view: View::default(),
             order: Vec::new(),
             rows: Vec::new(),
             selected: Vec::new(),
+            cut: Vec::new(),
             anchor: 0,
             cursor: 0,
             total_size: 0,
@@ -48,6 +90,7 @@ impl ListState {
 
     fn set_items(&mut self, items: Vec<Item>) {
         self.selected = vec![false; items.len()];
+        self.cut = vec![false; items.len()];
         self.items = items;
         self.anchor = 0;
         self.cursor = 0;
@@ -109,6 +152,22 @@ impl ListState {
 
     fn visible_items_indexed(&self) -> impl Iterator<Item = (usize, &Item)> {
         self.order.iter().map(|index| (*index as usize, &self.items[*index as usize]))
+    }
+
+    pub fn only_selected(&self) -> Option<(usize, &Item)> {
+        let mut selected = self.order.iter().enumerate().filter(|(_, index)| self.selected[**index as usize]);
+        let (row, index) = selected.next()?;
+        selected.next().is_none().then(|| (row, &self.items[*index as usize]))
+    }
+
+    pub fn select_name(&mut self, name: &str) -> Option<usize> {
+        let row = self.visible_items().position(|item| &*item.name == name)?;
+        self.press(row, false, false);
+        Some(row)
+    }
+
+    pub fn mark_cut(&mut self, paths: &HashSet<PathBuf>) {
+        self.cut = self.items.iter().map(|item| !paths.is_empty() && paths.contains(&item.path())).collect();
     }
 
     pub fn selected_count(&self) -> usize {
@@ -176,14 +235,17 @@ impl ListState {
         let cells: Vec<SharedString> =
             self.columns.iter().map(|column| column.cell(item, self.unit).into()).collect();
         let ratio = if self.largest_size == 0 { 0.0 } else { item.size as f32 / self.largest_size as f32 };
+        let subtitle = if self.view == View::Tiles { item.type_label().into() } else { SharedString::new() };
         Some(FileRow {
             cells: ModelRc::new(VecModel::from(cells)),
+            icon: Image::default(),
+            subtitle,
             folder: item.is_dir,
             selected: self.selected[index],
             ratio,
             busy: item.state == ItemState::Pending,
             warn: matches!(item.state, ItemState::Partial | ItemState::Cancelled),
-            dim: item.is_hidden(),
+            dim: item.is_hidden() || self.cut[index],
         })
     }
 }
@@ -191,11 +253,25 @@ impl ListState {
 pub struct ListModel {
     state: RefCell<ListState>,
     notify: ModelNotify,
+    icons: Rc<IconStore>,
+    waiting_for_icons: RefCell<BTreeSet<usize>>,
 }
 
 impl ListModel {
-    pub fn new(state: ListState) -> Self {
-        Self { state: RefCell::new(state), notify: ModelNotify::default() }
+    pub fn new(state: ListState, icons: Rc<IconStore>) -> Self {
+        Self {
+            state: RefCell::new(state),
+            notify: ModelNotify::default(),
+            icons,
+            waiting_for_icons: RefCell::default(),
+        }
+    }
+
+    pub fn refresh_icons(&self) {
+        let rows = std::mem::take(&mut *self.waiting_for_icons.borrow_mut());
+        for row in rows {
+            self.notify.row_changed(row);
+        }
     }
 
     pub fn state(&self) -> Ref<'_, ListState> {
@@ -274,7 +350,15 @@ impl Model for ListModel {
     }
 
     fn row_data(&self, row: usize) -> Option<FileRow> {
-        self.state.borrow().file_row(row)
+        let state = self.state.borrow();
+        let mut file_row = state.file_row(row)?;
+        let item = state.item(row)?;
+        let (icon, ready) = self.icons.item_icon(item, state.view.icon_size(), state.view.shows_thumbnails());
+        file_row.icon = icon;
+        if !ready {
+            self.waiting_for_icons.borrow_mut().insert(row);
+        }
+        Some(file_row)
     }
 
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -405,6 +489,50 @@ mod tests {
         let mut list = state(Column::Name, false, false);
         list.press(50, false, false);
         assert_eq!(list.selected_count(), 0);
+    }
+
+    #[test]
+    fn the_only_selected_row_is_reported_only_when_alone() {
+        let mut list = state(Column::Name, false, false);
+        assert!(list.only_selected().is_none());
+        list.press(2, false, false);
+        assert_eq!(list.only_selected().map(|(row, item)| (row, &*item.name)), Some((2, "Apple.txt")));
+        list.press(3, true, false);
+        assert!(list.only_selected().is_none());
+    }
+
+    #[test]
+    fn items_can_be_selected_by_name() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.select_name("zoo"), Some(1));
+        assert!(list.is_row_selected(1));
+        assert_eq!(list.select_name("missing"), None);
+    }
+
+    #[test]
+    fn cut_items_are_dimmed_and_clearing_the_set_restores_them() {
+        let mut list = state(Column::Name, false, false);
+        let cut: HashSet<PathBuf> = [PathBuf::from(r"C:\data\zoo")].into();
+        list.mark_cut(&cut);
+        assert!(list.file_row(1).unwrap().dim);
+        assert!(!list.file_row(0).unwrap().dim);
+        list.mark_cut(&HashSet::new());
+        assert!(!list.file_row(1).unwrap().dim);
+    }
+
+    #[test]
+    fn tiles_describe_the_item_type() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.file_row(0).unwrap().subtitle, "");
+        list.view = View::Tiles;
+        assert_eq!(list.file_row(0).unwrap().subtitle, "Folder");
+        assert_eq!(list.file_row(2).unwrap().subtitle, "TXT File");
+    }
+
+    #[test]
+    fn only_larger_views_show_thumbnails() {
+        assert!(View::ExtraLarge.shows_thumbnails() && View::Medium.shows_thumbnails() && View::Tiles.shows_thumbnails());
+        assert!(!View::Small.shows_thumbnails() && !View::List.shows_thumbnails() && !View::Details.shows_thumbnails());
     }
 
     #[test]
