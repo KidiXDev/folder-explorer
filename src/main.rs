@@ -2,6 +2,7 @@
 
 mod app;
 mod export;
+mod file_ops;
 mod format;
 mod hash;
 mod icons;
