@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnInfo, FileRow } from "types.slint";
-import { DimLabel, FileIcon, RenameBox } from "controls.slint";
+import { DimLabel, EmptyState, FileIcon, RenameBox } from "controls.slint";
 
 component HeaderCell {
     in property <ColumnInfo> info;
@@ -14,37 +14,48 @@ component HeaderCell {
         background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
     }
 
+    if root.info.sort-direction != 0: Rectangle {
+        x: 8px;
+        y: parent.height - 2px;
+        width: parent.width - 16px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent;
+    }
+
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 4px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 5px;
         alignment: root.info.right-aligned ? end : start;
 
         DimLabel {
             text: root.info.title;
+            font-weight: root.info.sort-direction != 0 ? 600 : 500;
+            color: root.info.sort-direction != 0 || touch.has-hover ? Theme.text : Theme.text-dim;
             horizontal-stretch: 0;
         }
 
         if root.info.sort-direction != 0: Image {
             source: root.info.sort-direction > 0 ? @image-url("icons/chevron-up.svg") : @image-url("icons/chevron-down.svg");
             width: 12px;
-            colorize: Theme.text-dim;
+            colorize: Theme.accent;
         }
     }
 
     Rectangle {
         x: parent.width - 1px;
-        y: 7px;
-        width: 1px;
-        height: parent.height - 14px;
-        background: Theme.line;
+        y: 6px;
+        width: resize-touch.has-hover || resize-touch.pressed ? 2px : 1px;
+        height: parent.height - 12px;
+        background: resize-touch.has-hover || resize-touch.pressed ? Theme.accent : Theme.line;
     }
 
-    TouchArea {
+    resize-touch := TouchArea {
         x: parent.width - 5px;
         width: 8px;
         mouse-cursor: col-resize;
@@ -68,24 +79,39 @@ component Row {
     min-width: root.total-width;
 
     Rectangle {
-        x: 4px;
-        width: root.width - 8px;
+        x: 6px;
+        y: 1px;
+        width: root.width - 12px;
+        height: parent.height - 2px;
         border-radius: Theme.radius;
-        background: root.data.selected ? Theme.selected : touch.has-hover ? Theme.hover : transparent;
+        border-width: root.data.selected ? 1px : 0px;
+        border-color: Theme.selected-border;
+        background: root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
+            : touch.has-hover ? Theme.hover
+            : transparent;
+    }
+
+    if root.data.selected: Rectangle {
+        x: 6px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 14px;
+        border-radius: 1.5px;
+        background: Theme.accent;
     }
 
     if root.data.ratio > 0: Rectangle {
         x: root.columns[0].width + 6px;
         y: 5px;
-        width: (root.columns[1].width - 12px) * clamp(root.data.ratio, 0, 1);
+        width: max(3px, (root.columns[1].width - 12px) * clamp(root.data.ratio, 0, 1));
         height: parent.height - 10px;
-        border-radius: 3px;
-        background: Theme.accent;
-        opacity: 0.2;
+        border-radius: Theme.radius-sm;
+        background: root.data.warn ? Theme.warning : Theme.accent;
+        opacity: root.data.selected || touch.has-hover ? 0.26 : 0.17;
     }
 
     FileIcon {
-        x: 12px;
+        x: 14px;
         y: (parent.height - self.height) / 2;
         width: 16px;
         height: 16px;
@@ -99,11 +125,12 @@ component Row {
             width: column.width;
 
             Text {
-                x: index == 0 ? 34px : 10px;
-                width: parent.width - self.x - 10px;
+                x: index == 0 ? 36px : 12px;
+                width: parent.width - self.x - 12px;
                 height: parent.height;
                 text: root.data.cells[index];
                 font-size: Theme.text-size;
+                font-weight: index == 0 && root.data.selected ? 500 : 400;
                 vertical-alignment: center;
                 horizontal-alignment: column.right-aligned ? right : left;
                 overflow: elide;
@@ -177,13 +204,14 @@ export component FileTable {
 
         VerticalLayout {
             Rectangle {
-                height: 30px;
+                height: 32px;
+                background: Theme.subtle-surface;
                 clip: true;
 
                 HorizontalLayout {
                     x: list.content-x;
                     width: root.total-width;
-                    height: 30px;
+                    height: 32px;
 
                     for column[index] in root.columns: HeaderCell {
                         info: column;
@@ -234,18 +262,17 @@ export component FileTable {
                 }
 
                 rename-box := RenameBox {
-                    x: 22px + list.content-x;
+                    x: 24px + list.content-x;
                     y: root.rename-row * Theme.row-height + list.content-y;
-                    width: root.columns[0].width - 26px;
+                    width: root.columns[0].width - 28px;
                     committed(text) => { root.rename-committed(text); }
                     cancelled => { root.rename-cancelled(); }
                 }
 
-                if root.rows.length == 0 && root.empty-message != "": DimLabel {
-                    text: root.empty-message;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                    width: parent.width - 64px;
+                if root.rows.length == 0 && root.empty-message != "": EmptyState {
+                    width: parent.width;
+                    height: parent.height;
+                    message: root.empty-message;
                 }
             }
         }

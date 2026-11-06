@@ -17,16 +17,28 @@ export component IconButton {
 
     Rectangle {
         border-radius: Theme.radius;
+        border-width: root.active && root.enabled ? 1px : 0px;
+        border-color: Theme.selected-border;
         background: !root.enabled ? transparent
             : touch.pressed ? Theme.pressed
-            : touch.has-hover || root.active ? Theme.hover
+            : root.active ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
+            : touch.has-hover ? Theme.hover
             : transparent;
+    }
+
+    if root.active && root.enabled: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 3px;
+        width: 14px;
+        height: 2.5px;
+        border-radius: 1.25px;
+        background: Theme.accent;
     }
 
     Image {
         source: root.icon;
-        width: 18px;
-        height: 18px;
+        width: 17px;
+        height: 17px;
         colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
     }
 
@@ -45,7 +57,7 @@ export component CommandButton {
     callback clicked();
 
     height: 32px;
-    min-width: layout.preferred-width;
+    min-width: max(34px, layout.preferred-width);
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
@@ -53,6 +65,8 @@ export component CommandButton {
 
     Rectangle {
         border-radius: Theme.radius;
+        border-width: root.enabled && (touch.has-hover || touch.pressed) ? 1px : 0px;
+        border-color: Theme.line;
         background: !root.enabled ? transparent
             : touch.pressed ? Theme.pressed
             : touch.has-hover ? Theme.hover
@@ -60,8 +74,8 @@ export component CommandButton {
     }
 
     layout := HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
+        padding-left: root.text != "" ? 10px : 8px;
+        padding-right: root.text != "" ? 10px : 8px;
         spacing: 6px;
 
         Image {
@@ -73,6 +87,7 @@ export component CommandButton {
         if root.text != "": Text {
             text: root.text;
             font-size: Theme.text-size;
+            font-weight: 500;
             vertical-alignment: center;
             color: root.enabled ? Theme.text : Theme.text-faint;
         }
@@ -80,7 +95,7 @@ export component CommandButton {
         if root.opens-menu: Image {
             source: @image-url("icons/chevron-down.svg");
             width: 10px;
-            colorize: Theme.text-dim;
+            colorize: root.enabled ? Theme.text-dim : Theme.text-faint;
         }
     }
 
@@ -124,7 +139,12 @@ export component RenameBox {
 
     Rectangle {
         border-radius: Theme.radius;
-        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.accent;
+        background: Theme.card;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000028;
+        drop-shadow-offset-y: 2px;
     }
 
     edit := LineEdit {
@@ -162,13 +182,15 @@ export component UsageBar {
     Rectangle {
         border-radius: self.height / 2;
         background: Theme.track;
-    }
+        clip: true;
 
-    Rectangle {
-        x: 0;
-        width: parent.width * clamp(root.ratio, 0, 1);
-        border-radius: self.height / 2;
-        background: root.nearly-full ? Theme.danger : Theme.accent;
+        Rectangle {
+            x: 0;
+            width: parent.width * clamp(root.ratio, 0, 1);
+            height: parent.height;
+            border-radius: self.height / 2;
+            background: root.nearly-full ? Theme.danger : Theme.accent;
+        }
     }
 }
 
@@ -184,4 +206,40 @@ export component DimLabel inherits Text {
     font-size: Theme.small-text-size;
     vertical-alignment: center;
     overflow: elide;
+}
+
+export component EmptyState {
+    in property <string> message;
+    in property <image> icon: @image-url("icons/folder.svg");
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        padding: 32px;
+
+        Rectangle {
+            height: 48px;
+
+            Rectangle {
+                width: 48px;
+                height: 48px;
+                border-radius: 24px;
+                background: Theme.hover;
+
+                Image {
+                    source: root.icon;
+                    width: 22px;
+                    height: 22px;
+                    colorize: Theme.text-faint;
+                }
+            }
+        }
+
+        DimLabel {
+            text: root.message;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            font-size: Theme.text-size;
+        }
+    }
 }

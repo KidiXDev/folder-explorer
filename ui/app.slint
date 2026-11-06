@@ -29,24 +29,42 @@ component Breadcrumbs {
     Rectangle {
         border-radius: Theme.radius;
         border-width: 1px;
-        border-color: Theme.line;
-        background: Theme.hover;
+        border-color: edit-touch.has-hover ? Theme.line-strong : Theme.line;
+        background: edit-touch.has-hover ? Theme.input-hover : Theme.input-bg;
         visible: !root.editing;
     }
 
-    TouchArea {
+    edit-touch := TouchArea {
         enabled: !root.editing;
+        mouse-cursor: text;
         clicked => { root.edit(); }
     }
 
     Rectangle {
+        x: 10px;
+        width: 16px;
+        height: parent.height;
+        visible: !root.editing;
+
+        Image {
+            width: 15px;
+            height: 15px;
+            source: root.crumbs.length <= 1 ? @image-url("icons/computer.svg") : @image-url("icons/folder.svg");
+            colorize: root.crumbs.length <= 1 ? Theme.text-dim : Theme.folder;
+        }
+    }
+
+    Rectangle {
+        x: 30px;
+        width: parent.width - 36px;
+        height: parent.height;
         clip: true;
         visible: !root.editing;
 
         HorizontalLayout {
             x: min(0px, parent.width - self.preferred-width);
             width: self.preferred-width;
-            padding-left: 6px;
+            padding-left: 2px;
             padding-right: 6px;
             spacing: 0;
 
@@ -64,12 +82,14 @@ component Breadcrumbs {
                     Rectangle {
                         y: 4px;
                         height: parent.height - 8px;
-                        border-radius: Theme.radius;
-                        background: touch.has-hover ? Theme.pressed : transparent;
+                        border-radius: Theme.radius-sm;
+                        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
                     }
 
                     name := Label {
                         text: crumb.name;
+                        font-weight: index == root.crumbs.length - 1 ? 600 : 400;
+                        color: index == root.crumbs.length - 1 || touch.has-hover ? Theme.text : Theme.text-dim;
                         overflow: clip;
                         horizontal-alignment: center;
                     }
@@ -146,7 +166,15 @@ component SearchFilters {
             edited => { root.changed(); }
         }
 
-        Rectangle { width: 16px; }
+        Rectangle {
+            width: 17px;
+
+            Rectangle {
+                width: 1px;
+                height: 20px;
+                background: Theme.line;
+            }
+        }
 
         CheckBox {
             text: "Date";
@@ -173,6 +201,18 @@ component SearchFilters {
             placeholder-text: "YYYY-MM-DD";
             text <=> root.date-text;
             edited => { root.changed(); }
+        }
+
+        if root.size-enabled || root.date-enabled: CommandButton {
+            icon: @image-url("icons/stop.svg");
+            text: "Reset";
+            clicked => {
+                root.size-enabled = false;
+                root.date-enabled = false;
+                root.size-text = "";
+                root.date-text = "";
+                root.changed();
+            }
         }
     }
 }
@@ -342,14 +382,14 @@ export component AppWindow inherits Window {
         VerticalLayout {
             Rectangle {
                 height: Theme.toolbar-height;
-                background: Theme.panel;
+                background: Theme.header;
 
                 HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    padding-top: 7px;
-                    padding-bottom: 7px;
-                    spacing: 2px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 3px;
 
                     IconButton {
                         icon: @image-url("icons/back.svg");
@@ -389,30 +429,72 @@ export component AppWindow inherits Window {
 
                     Rectangle { width: 6px; }
 
-                    search-box := LineEdit {
-                        width: 240px;
+                    Rectangle {
+                        width: 260px;
                         height: 34px;
-                        enabled: root.can-search;
-                        placeholder-text: "Search this folder";
-                        text <=> root.search-text;
-                        edited => { root.search-changed(); }
-                        accepted => { root.search-changed(); }
-                        key-pressed(event) => {
-                            if (event.text == Key.Escape) {
-                                root.search-text = "";
-                                root.search-changed();
-                                root.focus-list();
-                                return accept;
+
+                        search-box := LineEdit {
+                            width: parent.width;
+                            height: parent.height;
+                            enabled: root.can-search;
+                            placeholder-text: "Search this folder";
+                            text <=> root.search-text;
+                            edited => { root.search-changed(); }
+                            accepted => { root.search-changed(); }
+                            key-pressed(event) => {
+                                if (event.text == Key.Escape) {
+                                    root.search-text = "";
+                                    root.search-changed();
+                                    root.focus-list();
+                                    return accept;
+                                }
+                                reject
                             }
-                            reject
+                        }
+
+                        if root.search-text == "": Image {
+                            x: parent.width - 26px;
+                            y: (parent.height - self.height) / 2;
+                            width: 15px;
+                            height: 15px;
+                            source: @image-url("icons/search.svg");
+                            colorize: root.can-search ? Theme.text-dim : Theme.text-faint;
+                        }
+
+                        if root.search-text != "": Rectangle {
+                            x: parent.width - 30px;
+                            y: 4px;
+                            width: 26px;
+                            height: 26px;
+                            border-radius: Theme.radius-sm;
+                            background: clear-search.pressed ? Theme.pressed : clear-search.has-hover ? Theme.hover : transparent;
+
+                            Image {
+                                width: 13px;
+                                height: 13px;
+                                source: @image-url("icons/stop.svg");
+                                colorize: clear-search.has-hover ? Theme.text : Theme.text-dim;
+                            }
+
+                            clear-search := TouchArea {
+                                clicked => {
+                                    root.search-text = "";
+                                    root.search-changed();
+                                    root.focus-list();
+                                }
+                            }
                         }
                     }
-
                 }
             }
 
             Rectangle {
-                height: 42px;
+                height: 1px;
+                background: Theme.line;
+            }
+
+            Rectangle {
+                height: Theme.commandbar-height;
                 background: Theme.panel;
 
                 layout-menu := ContextMenuArea {
@@ -444,11 +526,11 @@ export component AppWindow inherits Window {
                         }
 
                         HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            padding-top: 5px;
-                            padding-bottom: 5px;
-                            spacing: 2px;
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 3px;
 
                             CommandButton {
                                 icon: @image-url("icons/new-folder.svg");
@@ -462,7 +544,7 @@ export component AppWindow inherits Window {
 
                                 Rectangle {
                                     width: 1px;
-                                    height: 20px;
+                                    height: 18px;
                                     background: Theme.line;
                                 }
                             }
@@ -507,7 +589,7 @@ export component AppWindow inherits Window {
 
                                 Rectangle {
                                     width: 1px;
-                                    height: 20px;
+                                    height: 18px;
                                     background: Theme.line;
                                 }
                             }
@@ -545,7 +627,7 @@ export component AppWindow inherits Window {
                                 height: 32px;
                                 icon: @image-url("icons/filter.svg");
                                 label: "Search filters";
-                                active: root.filters-open;
+                                active: root.filters-open || root.size-enabled || root.date-enabled;
                                 enabled: root.can-search;
                                 clicked => { root.filters-open = !root.filters-open; }
                             }
@@ -578,8 +660,13 @@ export component AppWindow inherits Window {
             }
 
             if root.filters-open: Rectangle {
+                height: 1px;
+                background: Theme.line;
+            }
+
+            if root.filters-open: Rectangle {
                 height: 44px;
-                background: Theme.panel;
+                background: Theme.subtle-surface;
 
                 SearchFilters {
                     width: parent.width;
@@ -617,9 +704,9 @@ export component AppWindow inherits Window {
 
                 Rectangle {
                     width: 1px;
-                    background: Theme.line;
+                    background: sidebar-resize.has-hover || sidebar-resize.pressed ? Theme.accent : Theme.line;
 
-                    TouchArea {
+                    sidebar-resize := TouchArea {
                         x: -3px;
                         width: 7px;
                         mouse-cursor: col-resize;
@@ -868,7 +955,18 @@ export component AppWindow inherits Window {
 
                 if root.summary-open: Rectangle {
                     width: 1px;
-                    background: Theme.line;
+                    background: summary-resize.has-hover || summary-resize.pressed ? Theme.accent : Theme.line;
+
+                    summary-resize := TouchArea {
+                        x: -3px;
+                        width: 7px;
+                        mouse-cursor: col-resize;
+                        moved => {
+                            if (self.pressed) {
+                                root.summary-width = clamp(root.summary-width - self.mouse-x + self.pressed-x, 220px, 520px);
+                            }
+                        }
+                    }
                 }
 
                 if root.summary-open: Rectangle {
@@ -893,17 +991,28 @@ export component AppWindow inherits Window {
             }
 
             Rectangle {
-                height: 30px;
-                background: Theme.panel;
+                height: Theme.statusbar-height;
+                background: Theme.header;
 
                 HorizontalLayout {
                     padding-left: 12px;
                     padding-right: 12px;
-                    spacing: 14px;
+                    spacing: 10px;
 
                     DimLabel {
                         text: root.status-items;
+                        font-weight: 500;
                         horizontal-stretch: 0;
+                    }
+
+                    if root.status-selection != "": Rectangle {
+                        width: 1px;
+
+                        Rectangle {
+                            width: 1px;
+                            height: 14px;
+                            background: Theme.line;
+                        }
                     }
 
                     if root.status-selection != "": DimLabel {
@@ -911,11 +1020,24 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 0;
                     }
 
-                    if root.busy: Spinner {
+                    if root.busy || root.status-activity != "": Rectangle {
+                        width: 1px;
+
+                        Rectangle {
+                            width: 1px;
+                            height: 14px;
+                            background: Theme.line;
+                        }
+                    }
+
+                    if root.busy: Rectangle {
                         width: 14px;
-                        height: 14px;
-                        y: 8px;
-                        indeterminate: true;
+
+                        Spinner {
+                            width: 14px;
+                            height: 14px;
+                            indeterminate: true;
+                        }
                     }
 
                     DimLabel {
@@ -924,24 +1046,45 @@ export component AppWindow inherits Window {
                     }
 
                     if root.status-errors != "": Rectangle {
-                        min-width: warning-text.preferred-width + 24px;
+                        min-width: warning-text.preferred-width + 32px;
                         horizontal-stretch: 0;
 
-                        Image {
-                            x: 0;
-                            width: 14px;
-                            source: @image-url("icons/warning.svg");
-                            colorize: Theme.warning;
+                        Rectangle {
+                            height: 22px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: err-touch.has-hover ? Theme.warning : transparent;
+                            background: err-touch.pressed ? Theme.pressed : Theme.warning-bg;
+
+                            Image {
+                                x: 7px;
+                                width: 13px;
+                                height: 13px;
+                                source: @image-url("icons/warning.svg");
+                                colorize: Theme.warning;
+                            }
+
+                            warning-text := DimLabel {
+                                x: 24px;
+                                height: parent.height;
+                                font-weight: 600;
+                                color: Theme.warning;
+                                text: root.status-errors;
+                            }
                         }
 
-                        warning-text := DimLabel {
-                            x: 20px;
-                            color: Theme.warning;
-                            text: root.status-errors;
-                        }
-
-                        TouchArea {
+                        err-touch := TouchArea {
                             clicked => { root.errors-open = true; }
+                        }
+                    }
+
+                    if root.disk-text != "": Rectangle {
+                        width: 1px;
+
+                        Rectangle {
+                            width: 1px;
+                            height: 14px;
+                            background: Theme.line;
                         }
                     }
 
@@ -953,11 +1096,14 @@ export component AppWindow inherits Window {
                             text: root.disk-text;
                         }
 
-                        UsageBar {
-                            y: 12px;
-                            width: 90px;
-                            ratio: root.disk-ratio;
-                            nearly-full: root.disk-nearly-full;
+                        Rectangle {
+                            width: 96px;
+
+                            UsageBar {
+                                width: parent.width;
+                                ratio: root.disk-ratio;
+                                nearly-full: root.disk-nearly-full;
+                            }
                         }
                     }
                 }
@@ -965,12 +1111,22 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.errors-open: ErrorPanel {
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        width: min(root.width - 80px, 760px);
-        height: min(root.height - 80px, 520px);
-        errors: root.errors;
-        closed => { root.errors-open = false; }
+    if root.errors-open: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.backdrop;
+
+        TouchArea {
+            clicked => { root.errors-open = false; }
+        }
+
+        ErrorPanel {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: min(root.width - 80px, 760px);
+            height: min(root.height - 80px, 520px);
+            errors: root.errors;
+            closed => { root.errors-open = false; }
+        }
     }
 }
