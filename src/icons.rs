@@ -23,6 +23,7 @@ use windows::core::HSTRING;
 
 pub const THIS_PC: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
 
+const PLAIN_FOLDER: &str = "shell:Windows";
 const MAX_LOADER_THREADS: usize = 6;
 const MAX_QUEUED: usize = 192;
 const CACHE_BYTES: usize = 256 << 20;
@@ -74,6 +75,10 @@ fn item_source(item: &Item, thumbnail: bool) -> Source {
 
 fn generic_source(item: &Item) -> Source {
     if item.is_dir { Source::Folder } else { Source::Extension(extension_of(&item.name)) }
+}
+
+fn shell_path<'a>(source: &Source, requester: &'a str) -> &'a str {
+    if *source == Source::Folder { PLAIN_FOLDER } else { requester }
 }
 
 fn to_rgba(pixels: &mut [u8]) {
@@ -139,8 +144,9 @@ struct Request {
 
 impl Request {
     fn load(&self) -> Option<Pixels> {
-        let thumbnail = self.key.thumbnail.then(|| shell_image(&self.path, self.pixels, SIIGBF_THUMBNAILONLY));
-        thumbnail.flatten().or_else(|| shell_image(&self.path, self.pixels, SIIGBF_ICONONLY))
+        let path = shell_path(&self.key.source, &self.path);
+        let thumbnail = self.key.thumbnail.then(|| shell_image(path, self.pixels, SIIGBF_THUMBNAILONLY));
+        thumbnail.flatten().or_else(|| shell_image(path, self.pixels, SIIGBF_ICONONLY))
     }
 }
 
@@ -432,6 +438,24 @@ mod tests {
         let icon = shell_image(r"C:\Windows", 32, SIIGBF_ICONONLY).unwrap();
         assert_eq!((icon.width(), icon.height()), (32, 32));
         assert!(icon.as_bytes().chunks_exact(4).any(|pixel| pixel[3] != 0));
+    }
+
+    #[test]
+    fn customized_folders_cannot_replace_the_shared_folder_icon() {
+        let customized = r"C:\Users\me\Pictures";
+        assert_eq!(shell_path(&Source::Folder, customized), PLAIN_FOLDER);
+        assert_eq!(shell_path(&Source::Path(customized.into(), 0), customized), customized);
+    }
+
+    #[test]
+    fn the_shared_folder_icon_matches_a_plain_folder() {
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let plain = std::env::temp_dir().join(format!("folder-explorer-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        let expected = shell_image(&plain.to_string_lossy(), 32, SIIGBF_ICONONLY);
+        std::fs::remove_dir(&plain).unwrap();
+        let shared = shell_image(PLAIN_FOLDER, 32, SIIGBF_ICONONLY).unwrap();
+        assert_eq!(shared.as_bytes(), expected.unwrap().as_bytes());
     }
 
     #[test]
