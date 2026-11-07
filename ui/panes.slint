@@ -200,8 +200,20 @@ component DriveTile {
                 nearly-full: root.drive.nearly-full;
             }
 
-            DimLabel {
-                text: root.drive.detail;
+            HorizontalLayout {
+                spacing: 6px;
+
+                DimLabel {
+                    text: root.drive.detail;
+                    horizontal-stretch: 1;
+                }
+
+                if root.drive.ratio > 0: DimLabel {
+                    text: round(root.drive.ratio * 100) + "%";
+                    font-weight: 600;
+                    color: root.drive.nearly-full ? Theme.danger : Theme.text-dim;
+                    horizontal-stretch: 0;
+                }
             }
         }
     }
