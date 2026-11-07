@@ -1,4 +1,4 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Palette, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 export component PopoverItem inherits Rectangle {
@@ -569,6 +569,8 @@ export component FileIcon {
 
 export component RenameBox {
     in-out property <bool> active;
+    in property <length> available-width;
+    out property <length> inset: 5px;
     callback committed(string);
     callback cancelled();
 
@@ -580,39 +582,89 @@ export component RenameBox {
     }
 
     visible: root.active;
-    height: 28px;
+    width: min(root.available-width, max(48px, edit.preferred-width + edit.text-cursor-width + 2 * root.inset));
+    height: 24px;
 
     Rectangle {
-        border-radius: Theme.radius;
+        border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.accent;
-        background: Theme.card;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #00000028;
-        drop-shadow-offset-y: 2px;
+        background: Theme.input-active;
     }
 
-    edit := LineEdit {
-        width: parent.width;
-        height: parent.height;
-        accepted(text) => {
-            if (root.active) {
-                root.active = false;
-                root.committed(text);
+    TouchArea { }
+
+    Rectangle {
+        x: root.inset;
+        width: root.width - 2 * root.inset;
+        clip: true;
+
+        ContextMenuArea {
+            Menu {
+                MenuItem {
+                    title: "Cut";
+                    activated => { edit.cut(); }
+                }
+
+                MenuItem {
+                    title: "Copy";
+                    activated => { edit.copy(); }
+                }
+
+                MenuItem {
+                    title: "Paste";
+                    activated => { edit.paste(); }
+                }
+
+                MenuSeparator { }
+
+                MenuItem {
+                    title: "Select all";
+                    activated => { edit.select-all(); }
+                }
             }
-        }
-        key-pressed(event) => {
-            if (event.text == Key.Escape) {
-                root.active = false;
-                root.cancelled();
-                return accept;
-            }
-            reject
-        }
-        changed has-focus => {
-            if (!self.has-focus && root.active) {
-                root.active = false;
-                root.committed(self.text);
+
+            edit := TextInput {
+                property <length> scroll-x;
+
+                x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.scroll-x));
+                width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                height: 100%;
+                vertical-alignment: center;
+                single-line: true;
+                color: Theme.text;
+                font-size: Theme.text-size;
+                font-weight: 500;
+                selection-background-color: Palette.selection-background;
+                selection-foreground-color: #ffffff;
+
+                cursor-position-changed(position) => {
+                    if (position.x + self.scroll-x < 0px) {
+                        self.scroll-x = 0px - position.x;
+                    } else if (position.x + self.scroll-x > parent.width - self.text-cursor-width) {
+                        self.scroll-x = parent.width - position.x - self.text-cursor-width;
+                    }
+                }
+                accepted => {
+                    if (root.active) {
+                        root.active = false;
+                        root.committed(self.text);
+                    }
+                }
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.active = false;
+                        root.cancelled();
+                        return accept;
+                    }
+                    reject
+                }
+                changed has-focus => {
+                    if (!self.has-focus && root.active) {
+                        root.active = false;
+                        root.committed(self.text);
+                    }
+                }
             }
         }
     }

@@ -79,6 +79,7 @@ component Row {
     in property <FileRow> data;
     in property <[ColumnInfo]> columns;
     in property <length> total-width;
+    in property <bool> renaming;
     callback pressed(bool, bool);
     callback background-pressed();
     callback right-pressed(length, length);
@@ -163,6 +164,7 @@ component Row {
                 width: parent.width - self.x - 12px;
                 height: parent.height;
                 text: root.data.cells[index];
+                opacity: index == 0 && root.renaming ? 0 : 1;
                 font-size: Theme.text-size;
                 font-weight: index == 0 && root.data.selected ? 500 : 400;
                 vertical-alignment: center;
@@ -257,7 +259,10 @@ export component FileTable {
 
                     for column[index] in root.columns: HeaderCell {
                         info: column;
-                        clicked => { root.sort-requested(index); }
+                        clicked => {
+                            focus.focus();
+                            root.sort-requested(index);
+                        }
                         resized(width) => { root.column-resized(index, width); }
                     }
                 }
@@ -270,6 +275,8 @@ export component FileTable {
             }
 
             Rectangle {
+                clip: true;
+
                 TouchArea {
                     y: max(0px, root.rows.length * Theme.row-height + list.content-y);
                     width: list.visible-width;
@@ -296,6 +303,7 @@ export component FileTable {
                         data: row;
                         columns: root.columns;
                         total-width: root.total-width;
+                        renaming: rename-box.active && root.rename-row == index;
                         pressed(control, shift) => {
                             focus.focus();
                             root.row-pressed(index, control, shift);
@@ -317,9 +325,9 @@ export component FileTable {
                 }
 
                 rename-box := RenameBox {
-                    x: 24px + list.content-x;
-                    y: root.rename-row * Theme.row-height + list.content-y;
-                    width: root.columns[0].width - 28px;
+                    x: 36px - self.inset + list.content-x;
+                    y: root.rename-row * Theme.row-height + list.content-y + (Theme.row-height - self.height) / 2;
+                    available-width: root.columns[0].width - 36px;
                     committed(text) => { root.rename-committed(text); }
                     cancelled => { root.rename-cancelled(); }
                 }

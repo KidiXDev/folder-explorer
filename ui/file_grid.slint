@@ -8,6 +8,7 @@ component GridCell {
     in property <length> icon-size;
     in property <bool> stacked;
     in property <bool> tile;
+    in property <bool> renaming;
     callback pressed(bool, bool);
     callback right-pressed(length, length);
     callback activated();
@@ -72,6 +73,7 @@ component GridCell {
             height: self.preferred-height + 6px;
             vertical-alignment: center;
             text: root.data.cells[0];
+            opacity: root.renaming ? 0 : 1;
             color: root.data.dim ? Theme.text-dim : Theme.text;
             font-size: Theme.text-size;
             font-weight: root.data.selected ? 500 : 400;
@@ -112,6 +114,7 @@ component GridCell {
 
             Label {
                 text: root.data.cells[0];
+                opacity: root.renaming ? 0 : 1;
                 font-weight: root.data.selected ? 500 : 400;
                 color: root.data.dim ? Theme.text-dim : Theme.text;
             }
@@ -226,6 +229,8 @@ export component FileGrid {
         height: parent.height;
 
         Rectangle {
+            clip: true;
+
             TouchArea {
                 y: max(0px, root.lines * root.cell-height + list.content-y);
                 width: list.visible-width;
@@ -276,6 +281,7 @@ export component FileGrid {
                             icon-size: root.icon-size;
                             stacked: root.stacked;
                             tile: root.tiles;
+                            renaming: rename-box.active && root.rename-index == slot.index;
                             pressed(control, shift) => {
                                 focus.focus();
                                 root.row-pressed(slot.index, control, shift);
@@ -292,10 +298,10 @@ export component FileGrid {
 
             rename-box := RenameBox {
                 x: root.gutter + root.column-of(root.rename-index) * root.cell-width
-                    + (root.stacked ? 6px : root.icon-size + 18px);
+                    + (root.stacked ? (root.cell-width - self.width) / 2 : root.icon-size + 22px - self.inset);
                 y: root.line-of(root.rename-index) * root.cell-height + list.content-y
-                    + (root.stacked ? root.icon-size + 12px : (root.cell-height - self.height) / 2);
-                width: root.cell-width - (root.stacked ? 12px : root.icon-size + 28px);
+                    + (root.stacked ? root.icon-size + 12px : root.tiles ? 9px : (root.cell-height - self.height) / 2);
+                available-width: root.cell-width - (root.stacked ? 12px : root.icon-size + 26px);
                 committed(text) => { root.rename-committed(text); }
                 cancelled => { root.rename-cancelled(); }
             }
