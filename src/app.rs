@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
+use std::ops::Range;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::rc::{self, Rc};
@@ -196,6 +197,12 @@ fn resolve_target(location: &Location, text: &str) -> PathBuf {
         Location::Computer => None,
     };
     exact.map_or_else(|| normalize(text), Path::to_path_buf)
+}
+
+fn size_range(text: &str, larger: bool) -> Option<Range<u64>> {
+    let megabytes = text.trim().parse::<f64>().ok().filter(|megabytes| megabytes.is_finite() && *megabytes >= 0.0)?;
+    let bytes = (megabytes * BYTES_PER_MEGABYTE) as u64;
+    Some(if larger { bytes.saturating_add(1)..u64::MAX } else { 0..bytes })
 }
 
 fn crumbs_for(location: &Location) -> Vec<Crumb> {
@@ -632,11 +639,8 @@ impl App {
     fn read_query(&self) -> Query {
         let ui = self.ui();
         let mut query = Query::new(&ui.get_search_text());
-        if ui.get_size_enabled()
-            && let Ok(megabytes) = ui.get_size_text().trim().parse::<f64>()
-        {
-            let bytes = (megabytes * BYTES_PER_MEGABYTE) as u64;
-            query.size = Some(if ui.get_size_rule() == 0 { bytes + 1..u64::MAX } else { 0..bytes });
+        if ui.get_size_enabled() {
+            query.size = size_range(&ui.get_size_text(), ui.get_size_rule() == 0);
         }
         if ui.get_date_enabled()
             && let Some(day) = platform::local_day(&ui.get_date_text())
@@ -1735,6 +1739,17 @@ mod tests {
         let location = Location::Folder(parent.join("inner"));
         assert_eq!(resolve_target(&location, &parent.to_string_lossy()), parent);
         assert_eq!(resolve_target(&location, r"D:\other"), PathBuf::from(r"D:\other"));
+    }
+
+    #[test]
+    fn size_filters_survive_extreme_input() {
+        assert_eq!(size_range("1", true), Some(1_048_577..u64::MAX));
+        assert_eq!(size_range(" 1 ", false), Some(0..1_048_576));
+        assert_eq!(size_range("1e300", true), Some(u64::MAX..u64::MAX));
+        assert_eq!(size_range("1e300", false), Some(0..u64::MAX));
+        for rejected in ["-1", "NaN", "inf", "abc", ""] {
+            assert_eq!(size_range(rejected, true), None, "{rejected}");
+        }
     }
 
     #[test]
