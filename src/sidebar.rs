@@ -373,6 +373,7 @@ mod tests {
             root: PathBuf::from(root),
             title: title.into(),
             usage: None,
+            network: false,
         }
     }
 

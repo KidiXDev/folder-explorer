@@ -37,7 +37,6 @@ component TreeItem {
             : open.pressed ? Theme.pressed
             : open.has-hover ? Theme.hover
             : transparent;
-        animate background { duration: 120ms; easing: ease-out; }
     }
 
     Rectangle {
@@ -55,6 +54,7 @@ component TreeItem {
     open := TouchArea {
         y: root.gap;
         height: Theme.row-height;
+        mouse-cursor: pointer;
         clicked => { root.opened(); }
     }
 
@@ -74,7 +74,6 @@ component TreeItem {
                 height: 18px;
                 border-radius: Theme.radius-sm;
                 background: toggle-touch.pressed ? Theme.pressed : toggle-touch.has-hover ? Theme.hover : transparent;
-                animate background { duration: 110ms; easing: ease-out; }
 
                 Image {
                     source: @image-url("icons/chevron-right.svg");
@@ -89,6 +88,7 @@ component TreeItem {
 
             toggle-touch := TouchArea {
                 enabled: root.data.expandable;
+                mouse-cursor: root.data.expandable ? pointer : default;
                 clicked => { root.toggled(); }
             }
         }
@@ -151,49 +151,37 @@ component DriveTile {
     callback opened();
 
     Rectangle {
-        border-radius: Theme.radius-lg;
-        border-width: 1px;
-        border-color: touch.has-hover ? Theme.selected-border : Theme.card-border;
-        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.card-hover : Theme.card;
-        drop-shadow-blur: touch.has-hover ? 12px : 4px;
-        drop-shadow-color: Theme.dark ? #00000038 : #00000010;
-        drop-shadow-offset-y: touch.has-hover ? 3px : 2px;
-        animate background, border-color { duration: 140ms; easing: ease-out; }
-        animate drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+        border-radius: Theme.radius;
+        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
     }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         double-clicked => { root.opened(); }
     }
 
     HorizontalLayout {
-        padding: 16px;
+        padding-left: 12px;
+        padding-right: 14px;
+        padding-top: 10px;
+        padding-bottom: 10px;
         spacing: 14px;
 
         Rectangle {
-            width: 52px;
+            width: 44px;
 
-            Rectangle {
-                width: 52px;
-                height: 52px;
-                border-radius: Theme.radius;
-                background: Theme.panel;
-                border-width: 1px;
-                border-color: Theme.line;
-
-                Image {
-                    source: root.drive.icon.width > 0 ? root.drive.icon : @image-url("icons/drive.svg");
-                    width: 32px;
-                    height: 32px;
-                    image-fit: contain;
-                    colorize: root.drive.icon.width > 0 ? transparent : Theme.text-dim;
-                }
+            Image {
+                source: root.drive.icon.width > 0 ? root.drive.icon : @image-url("icons/drive.svg");
+                width: 44px;
+                height: 44px;
+                image-fit: contain;
+                colorize: root.drive.icon.width > 0 ? transparent : Theme.text-dim;
             }
         }
 
         VerticalLayout {
             alignment: center;
-            spacing: 7px;
+            spacing: 6px;
             horizontal-stretch: 1;
 
             HorizontalLayout {
@@ -227,7 +215,7 @@ component DriveTile {
             }
 
             UsageBar {
-                height: 7px;
+                height: 8px;
                 ratio: root.drive.ratio;
                 nearly-full: root.drive.nearly-full;
             }
@@ -251,63 +239,150 @@ component DriveTile {
     }
 }
 
+component DriveSectionHeader {
+    in property <string> title;
+    in property <int> count;
+    in-out property <bool> expanded: true;
+
+    height: 32px;
+
+    HorizontalLayout {
+        spacing: 8px;
+
+        Rectangle {
+            width: header-row.preferred-width + 12px;
+            border-radius: Theme.radius-sm;
+            background: toggle.pressed ? Theme.pressed : toggle.has-hover ? Theme.hover : transparent;
+
+            header-row := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 6px;
+
+                Rectangle {
+                    width: 12px;
+
+                    Image {
+                        source: @image-url("icons/chevron-down.svg");
+                        width: 11px;
+                        height: 11px;
+                        colorize: Theme.text-dim;
+                        transform-rotation: root.expanded ? 0deg : -90deg;
+                        animate transform-rotation { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                    }
+                }
+
+                Text {
+                    text: root.title;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+
+                DimLabel {
+                    text: "(" + root.count + ")";
+                    font-weight: 500;
+                }
+            }
+
+            toggle := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.expanded = !root.expanded; }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: parent.width;
+                height: 1px;
+                background: Theme.line;
+            }
+        }
+    }
+}
+
 export component DrivesView {
     in property <[DriveCard]> drives;
+    in property <[DriveCard]> network-drives;
     callback opened(string);
 
-    property <length> tile-width: 336px;
-    property <length> tile-height: 104px;
-    property <length> gap: 14px;
-    property <length> header-offset: 56px;
+    property <length> tile-width: 312px;
+    property <length> tile-height: 82px;
+    property <length> gap: 12px;
+    property <length> section-header-height: 40px;
     property <int> per-row: max(1, floor((self.width - 2 * gap) / (tile-width + gap)));
+
+    property <bool> drives-expanded: true;
+    property <bool> network-expanded: true;
+
+    property <int> drive-rows: root.drives-expanded ? ceil(root.drives.length / root.per-row) : 0;
+    property <int> network-rows: root.network-expanded ? max(1, ceil(root.network-drives.length / root.per-row)) : 0;
+
+    property <length> drives-start-y: 14px + root.section-header-height;
+    property <length> network-header-y: root.drives-start-y
+        + (root.drives-expanded ? root.drive-rows * (root.tile-height + root.gap) + 10px : 6px);
+    property <length> network-start-y: root.network-header-y + root.section-header-height;
 
     ScrollView {
         width: parent.width;
         height: parent.height;
-        content-height: root.header-offset + ceil(root.drives.length / root.per-row) * (root.tile-height + root.gap) + root.gap;
+        content-height: root.network-start-y
+            + (root.network-expanded
+                ? (root.network-drives.length > 0
+                    ? root.network-rows * (root.tile-height + root.gap)
+                    : 36px)
+                : 0px)
+            + root.gap;
 
-        HorizontalLayout {
-            x: root.gap + 2px;
-            y: 16px;
-            height: 28px;
-            spacing: 10px;
-            alignment: start;
+        DriveSectionHeader {
+            x: root.gap;
+            y: 14px;
+            width: max(0px, root.width - 2 * root.gap);
+            title: "Devices and drives";
+            count: root.drives.length;
+            expanded <=> root.drives-expanded;
+        }
 
-            Text {
-                text: "Devices and drives";
-                font-size: 14px;
-                font-weight: 600;
-                color: Theme.text;
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                width: count-label.preferred-width + 12px;
-
-                Rectangle {
-                    width: parent.width;
-                    height: 20px;
-                    border-radius: 10px;
-                    background: Theme.hover;
-                    border-width: 1px;
-                    border-color: Theme.line;
-
-                    count-label := DimLabel {
-                        text: root.drives.length;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                    }
-                }
+        if root.drives-expanded: Rectangle {
+            for drive[index] in root.drives: DriveTile {
+                x: root.gap + mod(index, root.per-row) * (root.tile-width + root.gap);
+                y: root.drives-start-y + floor(index / root.per-row) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
+                drive: drive;
+                opened => { root.opened(drive.path); }
             }
         }
 
-        for drive[index] in root.drives: DriveTile {
-            x: root.gap + mod(index, root.per-row) * (root.tile-width + root.gap);
-            y: root.header-offset + floor(index / root.per-row) * (root.tile-height + root.gap);
-            width: root.tile-width;
-            height: root.tile-height;
-            drive: drive;
-            opened => { root.opened(drive.path); }
+        DriveSectionHeader {
+            x: root.gap;
+            y: root.network-header-y;
+            width: max(0px, root.width - 2 * root.gap);
+            title: "Network locations";
+            count: root.network-drives.length;
+            expanded <=> root.network-expanded;
+        }
+
+        if root.network-expanded && root.network-drives.length == 0: DimLabel {
+            x: root.gap + 24px;
+            y: root.network-start-y;
+            height: 28px;
+            text: "No network locations connected";
+        }
+
+        if root.network-expanded: Rectangle {
+            for drive[index] in root.network-drives: DriveTile {
+                x: root.gap + mod(index, root.per-row) * (root.tile-width + root.gap);
+                y: root.network-start-y + floor(index / root.per-row) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
+                drive: drive;
+                opened => { root.opened(drive.path); }
+            }
         }
     }
 }

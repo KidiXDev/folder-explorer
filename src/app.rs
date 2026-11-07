@@ -32,7 +32,7 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SEARCH_DELAY: Duration = Duration::from_millis(180);
 const NEARLY_FULL: f32 = 0.9;
-const DRIVE_ICON_SIZE: u32 = 32;
+const DRIVE_ICON_SIZE: u32 = 48;
 const BYTES_PER_MEGABYTE: f64 = 1_048_576.0;
 const SUMMARY_KINDS: [SummaryKind; 4] = [
     SummaryKind::Extension,
@@ -1013,21 +1013,25 @@ impl App {
 
     fn show_drives(&self) {
         let mut missing_icons = false;
-        let cards: Vec<DriveCard> = self
-            .drives
-            .iter()
-            .map(|drive| {
-                let icon = self.icons.location_icon(&drive.root.to_string_lossy(), DRIVE_ICON_SIZE);
-                missing_icons |= icon.is_none();
-                drive_card(drive, icon.unwrap_or_default(), self.settings.unit)
-            })
-            .collect();
+        let mut devices = Vec::new();
+        let mut network = Vec::new();
+        for drive in &self.drives {
+            let icon = self.icons.location_icon(&drive.root.to_string_lossy(), DRIVE_ICON_SIZE);
+            missing_icons |= icon.is_none();
+            let card = drive_card(drive, icon.unwrap_or_default(), self.settings.unit);
+            if drive.network {
+                network.push(card);
+            } else {
+                devices.push(card);
+            }
+        }
         self.drive_icons_missing.set(missing_icons);
         let ui = self.ui();
         if self.location == Location::Computer {
-            ui.set_status_items(plural(cards.len() as u64, "drive").into());
+            ui.set_status_items(plural(self.drives.len() as u64, "drive").into());
         }
-        ui.set_drives(ModelRc::new(VecModel::from(cards)));
+        ui.set_drives(ModelRc::new(VecModel::from(devices)));
+        ui.set_network_drives(ModelRc::new(VecModel::from(network)));
     }
 
     fn load_tree_children(&mut self, parent: Option<PathBuf>) {

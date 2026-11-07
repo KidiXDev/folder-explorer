@@ -200,6 +200,7 @@ pub struct Drive {
     pub root: PathBuf,
     pub title: String,
     pub usage: Option<DiskUsage>,
+    pub network: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -242,23 +243,62 @@ fn volume_label(root: &[u16]) -> Option<String> {
 fn describe_drive(letter: char) -> Drive {
     let root = PathBuf::from(format!("{letter}:\\"));
     let path = wide(&root);
-    let fallback = match unsafe { GetDriveTypeW(path.as_ptr()) } {
+    let drive_type = unsafe { GetDriveTypeW(path.as_ptr()) };
+    let fallback = match drive_type {
         DRIVE_REMOVABLE => "Removable Disk",
         DRIVE_REMOTE => "Network Drive",
         DRIVE_CDROM => "Optical Drive",
         _ => "Local Disk",
     };
     let label = volume_label(&path).unwrap_or_else(|| fallback.into());
-    Drive { title: format!("{label} ({letter}:)"), usage: disk_usage(&root), root }
+    Drive {
+        title: format!("{label} ({letter}:)"),
+        usage: disk_usage(&root),
+        root,
+        network: drive_type == DRIVE_REMOTE,
+    }
+}
+
+unsafe fn enumerate_network_shortcuts() -> windows::core::Result<Vec<Drive>> {
+    unsafe {
+        let nethood: IShellItem = SHCreateItemFromParsingName(&HSTRING::from("shell:NetHood"), None)?;
+        let items: IEnumShellItems = nethood.BindToHandler(None, &BHID_EnumItems)?;
+        let next = || {
+            let mut item = [None];
+            items.Next(&mut item, None).ok()?;
+            item[0].take()
+        };
+        Ok(std::iter::from_fn(next)
+            .filter_map(|item| {
+                let root = PathBuf::from(shell_name(&item, SIGDN_FILESYSPATH)?);
+                let title = shell_name(&item, SIGDN_NORMALDISPLAY)?;
+                Some(Drive { usage: disk_usage(&root), root, title, network: true })
+            })
+            .collect())
+    }
 }
 
 pub fn drives() -> Vec<Drive> {
     let mask = unsafe { GetLogicalDrives() };
     let letters: Vec<char> = ('A'..='Z').enumerate().filter(|(bit, _)| mask >> bit & 1 == 1).map(|(_, letter)| letter).collect();
-    thread::scope(|scope| {
+    let mut list: Vec<Drive> = thread::scope(|scope| {
         let queries: Vec<_> = letters.iter().map(|letter| scope.spawn(|| describe_drive(*letter))).collect();
         queries.into_iter().filter_map(|query| query.join().ok()).collect()
-    })
+    });
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+        if let Ok(shortcuts) = enumerate_network_shortcuts() {
+            for shortcut in shortcuts {
+                if !list.iter().any(|drive| drive.root == shortcut.root) {
+                    list.push(shortcut);
+                }
+            }
+        }
+        if initialized {
+            CoUninitialize();
+        }
+    }
+    list
 }
 
 unsafe fn shell_name(item: &IShellItem, kind: SIGDN) -> Option<String> {

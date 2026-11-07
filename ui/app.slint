@@ -468,6 +468,7 @@ export component AppWindow inherits Window {
     in property <[Crumb]> crumbs;
     in property <string> current-path;
     in property <[DriveCard]> drives;
+    in property <[DriveCard]> network-drives;
     in property <[SummaryRow]> summary-rows;
     in property <int> summary-kind;
     in property <string> summary-hint;
@@ -1020,6 +1021,7 @@ export component AppWindow inherits Window {
                                     enabled: root.single-selection && root.in-search-results;
                                     activated => { root.action("open-location"); }
                                 }
+                            network-drives: root.network-drives;
 
                                 MenuItem {
                                     title: "Show in File Explorer";
