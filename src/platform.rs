@@ -22,6 +22,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HSTRING, Interface};
 use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HWND, LPARAM, LRESULT, MAX_PATH, SYSTEMTIME, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
 use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
@@ -49,8 +50,9 @@ use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, GWLP_WNDPROC, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO, MessageBoxW,
-    SW_SHOWNORMAL, SetWindowLongPtrW, WM_APPCOMMAND, WM_XBUTTONDOWN, WNDPROC, XBUTTON1, XBUTTON2,
+    CallWindowProcW, GWLP_WNDPROC, GetWindowPlacement, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO,
+    MessageBoxW, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWNORMAL, SetWindowLongPtrW, SetWindowPlacement, WINDOWPLACEMENT,
+    WM_APPCOMMAND, WM_XBUTTONDOWN, WNDPROC, WPF_RESTORETOMAXIMIZED, XBUTTON1, XBUTTON2,
 };
 
 pub const QUICK_ACCESS: &str = "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
@@ -168,11 +170,67 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
     }
 }
 
-pub fn restore_frame_appearance(window: &slint::Window, on_navigate: impl Fn(bool) + 'static) {
+fn native_handle(window: &slint::Window) -> Option<HWND> {
     let window = window.window_handle();
-    let Ok(handle) = window.window_handle() else { return };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
-    let hwnd = handle.hwnd.get() as HWND;
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return None };
+    Some(handle.hwnd.get() as HWND)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowPlacement {
+    pub rect: [i32; 4],
+    pub maximized: bool,
+}
+
+impl WindowPlacement {
+    pub fn parse(value: &str) -> Option<Self> {
+        let fields: Vec<&str> = value.split(',').collect();
+        let [left, top, right, bottom, maximized] = fields[..] else { return None };
+        let rect = [left.parse().ok()?, top.parse().ok()?, right.parse().ok()?, bottom.parse().ok()?];
+        (rect[2] > rect[0] && rect[3] > rect[1]).then_some(Self { rect, maximized: maximized == "true" })
+    }
+
+    pub fn serialize(&self) -> String {
+        let [left, top, right, bottom] = self.rect;
+        format!("{left},{top},{right},{bottom},{}", self.maximized)
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        ((self.rect[2] - self.rect[0]) as u32, (self.rect[3] - self.rect[1]) as u32)
+    }
+}
+
+fn current_placement(hwnd: HWND) -> Option<WINDOWPLACEMENT> {
+    let mut placement: WINDOWPLACEMENT = unsafe { zeroed() };
+    placement.length = size_of::<WINDOWPLACEMENT>() as u32;
+    (unsafe { GetWindowPlacement(hwnd, &mut placement) } != 0).then_some(placement)
+}
+
+pub fn window_placement(window: &slint::Window) -> Option<WindowPlacement> {
+    let placement = current_placement(native_handle(window)?)?;
+    let rect = placement.rcNormalPosition;
+    let minimized_from_maximized = placement.showCmd == SW_SHOWMINIMIZED as u32 && placement.flags & WPF_RESTORETOMAXIMIZED as u32 != 0;
+    Some(WindowPlacement {
+        rect: [rect.left, rect.top, rect.right, rect.bottom],
+        maximized: placement.showCmd == SW_SHOWMAXIMIZED as u32 || minimized_from_maximized,
+    })
+}
+
+pub fn apply_window_placement(window: &slint::Window, saved: WindowPlacement) {
+    let Some(hwnd) = native_handle(window) else { return };
+    let Some(mut placement) = current_placement(hwnd) else { return };
+    let mut rect = placement.rcNormalPosition;
+    [rect.left, rect.top, rect.right, rect.bottom] = saved.rect;
+    if !unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) }.is_null() {
+        placement.rcNormalPosition = rect;
+    }
+    placement.showCmd = if saved.maximized { SW_SHOWMAXIMIZED } else { SW_SHOWNORMAL } as u32;
+    unsafe { SetWindowPlacement(hwnd, &placement) };
+}
+
+pub fn restore_frame_appearance(window: &slint::Window, on_navigate: impl Fn(bool) + 'static) {
+    let Some(hwnd) = native_handle(window) else { return };
     let frame = MARGINS { cxLeftWidth: 1, cxRightWidth: 1, cyTopHeight: 1, cyBottomHeight: 1 };
     let corners = DWMWCP_ROUND;
     NAVIGATE_HANDLER.with(|slot| {

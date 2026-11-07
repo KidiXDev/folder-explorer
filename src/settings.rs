@@ -1,6 +1,7 @@
 use crate::format::Unit;
 use crate::item::Column;
 use crate::list::View;
+use crate::platform::WindowPlacement;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ pub struct Settings {
     pub sort: Column,
     pub descending: bool,
     pub sidebar_width: f32,
-    pub window_size: (u32, u32),
+    pub placement: Option<WindowPlacement>,
     pub tree: TreeMemory,
     folder_views: HashMap<String, View>,
 }
@@ -38,7 +39,7 @@ impl Default for Settings {
             sort: Column::Name,
             descending: false,
             sidebar_width: 240.0,
-            window_size: (1180, 720),
+            placement: None,
             tree: TreeMemory::default(),
             folder_views: HashMap::new(),
         }
@@ -142,11 +143,7 @@ impl Settings {
             }
             "descending" => self.descending = value == "true",
             "sidebar_width" => self.sidebar_width = value.parse().unwrap_or(self.sidebar_width),
-            "window_size" => {
-                if let Some(size) = value.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))) {
-                    self.window_size = size;
-                }
-            }
+            "window_placement" => self.placement = WindowPlacement::parse(value).or(self.placement),
             _ => {}
         }
     }
@@ -161,7 +158,7 @@ impl Settings {
         let folder_views: String =
             folder_views.iter().map(|(folder, view)| format!("folder_view={}|{folder}\n", view.index())).collect();
         format!(
-            "unit={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_size={}x{}\ntree_auto_expand_off={}\ntree_computer_closed={}\ntree_quick_access_closed={}\n{folder_views}",
+            "unit={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_placement={}\ntree_auto_expand_off={}\ntree_computer_closed={}\ntree_quick_access_closed={}\n{folder_views}",
             self.unit.index(),
             self.show_hidden,
             self.summary_open,
@@ -170,8 +167,7 @@ impl Settings {
             column_id(self.sort),
             self.descending,
             self.sidebar_width,
-            self.window_size.0,
-            self.window_size.1,
+            self.placement.map_or_else(String::new, |placement| placement.serialize()),
             self.tree.auto_expand_off,
             self.tree.computer_closed,
             self.tree.quick_access_closed,
@@ -193,7 +189,7 @@ mod tests {
             sort: Column::Size,
             descending: true,
             sidebar_width: 300.0,
-            window_size: (1600, 900),
+            placement: Some(WindowPlacement { rect: [-1200, 40, 400, 940], maximized: true }),
             tree: TreeMemory { auto_expand_off: true, computer_closed: true, quick_access_closed: true },
             ..Settings::default()
         };
@@ -206,11 +202,11 @@ mod tests {
     #[test]
     fn broken_files_fall_back_to_defaults() {
         let garbage =
-            "unit=99\nview=99\ncolumns=abc\nwindow_size=wide\nsort=-1\nfolder_view=99|C:\\a\nfolder_view=C:\\b\nnonsense\n=\n";
+            "unit=99\nview=99\ncolumns=abc\nwindow_placement=wide\nsort=-1\nfolder_view=99|C:\\a\nfolder_view=C:\\b\nnonsense\n=\n";
         let settings = Settings::parse(garbage);
         assert_eq!(settings.unit, Unit::Auto);
         assert!(settings.folder_views.is_empty());
-        assert_eq!(settings.window_size, (1180, 720));
+        assert_eq!(settings.placement, None);
         assert_eq!(settings.columns, [Column::Name, Column::Size]);
     }
 

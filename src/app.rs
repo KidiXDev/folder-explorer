@@ -14,7 +14,7 @@ use crate::sidebar::Sidebar;
 use crate::ui::{AppWindow, ColumnChoice, ColumnInfo, Crumb, DriveCard};
 use rayon::prelude::*;
 use slint::{
-    CloseRequestResponse, ComponentHandle, Image, LogicalSize, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak,
+    CloseRequestResponse, ComponentHandle, Image, LogicalSize, ModelRc, PhysicalSize, SharedString, Timer, TimerMode, VecModel, Weak,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -33,6 +33,7 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SEARCH_DELAY: Duration = Duration::from_millis(180);
 const NEARLY_FULL: f32 = 0.9;
+const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 720.0);
 const DRIVE_ICON_SIZE: u32 = 48;
 const BYTES_PER_MEGABYTE: f64 = 1_048_576.0;
 const SUMMARY_KINDS: [SummaryKind; 5] = [
@@ -1298,9 +1299,7 @@ impl App {
 
     fn save_settings(&mut self) {
         let ui = self.ui();
-        let scale = ui.window().scale_factor();
-        let size = ui.window().size().to_logical(scale);
-        self.settings.window_size = (size.width as u32, size.height as u32);
+        self.settings.placement = platform::window_placement(ui.window()).or(self.settings.placement);
         self.settings.sidebar_width = ui.get_sidebar_width();
         self.settings.summary_open = ui.get_summary_open();
         self.settings.tree = self.sidebar.memory();
@@ -1523,7 +1522,14 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
     platform::allow_dark_menus();
     let ui = AppWindow::new()?;
     let settings = Settings::load();
-    ui.window().set_size(LogicalSize::new(settings.window_size.0 as f32, settings.window_size.1 as f32));
+    let placement = settings.placement;
+    match placement {
+        Some(placement) => {
+            let (width, height) = placement.size();
+            ui.window().set_size(PhysicalSize::new(width, height));
+        }
+        None => ui.window().set_size(LogicalSize::new(DEFAULT_WINDOW_SIZE.0, DEFAULT_WINDOW_SIZE.1)),
+    }
     ui.set_unit_index(settings.unit.index() as i32);
     ui.set_show_hidden(settings.show_hidden);
     ui.set_summary_open(settings.summary_open);
@@ -1556,7 +1562,7 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
         }
         app.show_location();
     }
-    let _ = ui.as_weak().upgrade_in_event_loop(|ui| {
+    let _ = ui.as_weak().upgrade_in_event_loop(move |ui| {
         let nav_ui = ui.as_weak();
         platform::restore_frame_appearance(ui.window(), move |forward| {
             let nav_ui = nav_ui.clone();
@@ -1570,6 +1576,9 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
                 }
             });
         });
+        if let Some(placement) = placement {
+            platform::apply_window_placement(ui.window(), placement);
+        }
     });
     slint::run_event_loop()?;
     ui.hide()
