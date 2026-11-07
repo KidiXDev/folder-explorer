@@ -49,6 +49,11 @@ impl View {
     }
 }
 
+fn name_starts_with(name: &str, lowercase_prefix: &str) -> bool {
+    let mut name = name.chars().flat_map(char::to_lowercase);
+    lowercase_prefix.chars().all(|character| name.next() == Some(character))
+}
+
 pub struct ListState {
     pub items: Vec<Item>,
     pub columns: Vec<Column>,
@@ -176,6 +181,23 @@ impl ListState {
         let row = self.visible_items().position(|item| &*item.name == name)?;
         self.press(row, false, false);
         Some(row)
+    }
+
+    pub fn select_typed(&mut self, typed: &str) -> Option<usize> {
+        let row = self.find_typed(&typed.to_lowercase())?;
+        self.press(row, false, false);
+        Some(row)
+    }
+
+    fn find_typed(&self, typed: &str) -> Option<usize> {
+        let first = typed.chars().next()?;
+        let cycling = typed.chars().all(|character| character == first);
+        let prefix = if cycling { &typed[..first.len_utf8()] } else { typed };
+        let start = self.cursor + usize::from(cycling && self.is_row_selected(self.cursor));
+        let count = self.order.len();
+        (start..start + count)
+            .map(|row| row % count)
+            .find(|row| self.item(*row).is_some_and(|item| name_starts_with(&item.name, prefix)))
     }
 
     pub fn mark_cut(&mut self, paths: &HashSet<PathBuf>) {
@@ -562,6 +584,45 @@ mod tests {
         assert_eq!(list.select_name("zoo"), Some(1));
         assert!(list.is_row_selected(1));
         assert_eq!(list.select_name("missing"), None);
+    }
+
+    #[test]
+    fn a_typed_letter_starts_from_the_top_when_nothing_is_selected() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.select_typed("a"), Some(0));
+        assert!(list.is_row_selected(0));
+    }
+
+    #[test]
+    fn repeating_a_letter_cycles_through_its_matches_and_wraps() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.select_typed("a"), Some(0));
+        assert_eq!(list.select_typed("aa"), Some(2));
+        assert_eq!(list.select_typed("aaa"), Some(0));
+    }
+
+    #[test]
+    fn typed_letters_narrow_by_prefix_ignoring_case() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.select_typed("A"), Some(0));
+        assert_eq!(list.select_typed("AP"), Some(2));
+        assert_eq!(list.only_selected().map(|(_, item)| &*item.name), Some("Apple.txt"));
+    }
+
+    #[test]
+    fn a_failed_match_keeps_the_selection() {
+        let mut list = state(Column::Name, false, false);
+        list.press(1, false, false);
+        assert_eq!(list.select_typed("q"), None);
+        assert!(list.is_row_selected(1));
+    }
+
+    #[test]
+    fn typing_skips_hidden_rows_and_empty_lists() {
+        let mut list = state(Column::Name, false, false);
+        assert_eq!(list.select_typed("s"), None);
+        let mut empty = ListState::new(vec![Column::Name], Unit::Auto, Column::Name, false, false);
+        assert_eq!(empty.select_typed("a"), None);
     }
 
     #[test]

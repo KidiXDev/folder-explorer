@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SEARCH_DELAY: Duration = Duration::from_millis(180);
+const TYPE_AHEAD_PAUSE: Duration = Duration::from_secs(1);
 const NEARLY_FULL: f32 = 0.9;
 const DEFAULT_WINDOW_SIZE: (f32, f32) = (1180.0, 720.0);
 const DRIVE_ICON_SIZE: u32 = 48;
@@ -117,6 +118,8 @@ struct App {
     pending_select: Option<String>,
     pending_rename: bool,
     renaming: Option<PathBuf>,
+    typed: String,
+    typed_at: Instant,
     sender: Sender<Message>,
     receiver: Receiver<Message>,
     workers: Arc<()>,
@@ -167,6 +170,11 @@ fn scan_folder(
     node.collect_errors(&path, &mut errors);
     let seconds = started.elapsed().as_secs_f64();
     let _ = sender.send(Message::Finished { scan, generation, path, node: Arc::new(node), errors, seconds, from_cache });
+}
+
+fn is_name_text(text: &str) -> bool {
+    let special_key = |character: char| character.is_control() || ('\u{f700}'..='\u{f7ff}').contains(&character);
+    !text.is_empty() && !text.chars().any(special_key)
 }
 
 fn describe_error(path: &Path, error: &io::Error) -> String {
@@ -296,6 +304,8 @@ impl App {
             pending_select: None,
             pending_rename: false,
             renaming: None,
+            typed: String::new(),
+            typed_at: Instant::now(),
             sender,
             receiver,
             workers: Arc::new(()),
@@ -1145,6 +1155,21 @@ impl App {
         }
     }
 
+    fn type_ahead(&mut self, text: &str) {
+        if !is_name_text(text) {
+            return;
+        }
+        if self.typed_at.elapsed() > TYPE_AHEAD_PAUSE {
+            self.typed.clear();
+        }
+        self.typed_at = Instant::now();
+        self.typed.push_str(text);
+        if let Some(row) = self.list.change_selection(|state| state.select_typed(&self.typed)) {
+            self.ui().invoke_reveal_row(row as i32);
+            self.show_selection();
+        }
+    }
+
     fn selected_paths(&self) -> Vec<PathBuf> {
         self.list.state().selected_items().map(Item::path).collect()
     }
@@ -1508,6 +1533,7 @@ fn wire(ui: &AppWindow, shared: &Shared) {
     on!(on_sort_chosen, |app, index| app.sort_column(Column::DEFAULT[index as usize]));
     on!(on_menu_opening, |app| app.refresh_can_paste());
     on!(on_rename_cancelled, |app| app.cancel_rename());
+    on!(on_text_typed, |app, text| app.type_ahead(&text));
 
     {
         let shared = shared.clone();
@@ -1624,7 +1650,7 @@ mod tests {
     use crate::item::HASH_NAMES;
     use crate::scan::tests::{TempTree, scan};
     use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-    use slint::platform::{Platform, WindowAdapter, set_platform};
+    use slint::platform::{Key, Platform, WindowAdapter, WindowEvent, set_platform};
     use std::os::windows::ffi::OsStringExt;
 
     struct Headless;
@@ -1658,6 +1684,40 @@ mod tests {
 
     fn md5(text: &str) -> Option<[String; 4]> {
         Some([text.into(), String::new(), String::new(), String::new()])
+    }
+
+    fn press(ui: &AppWindow, keys: &[SharedString]) {
+        for key in keys {
+            ui.window().dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+        }
+        for key in keys.iter().rev() {
+            ui.window().dispatch_event(WindowEvent::KeyReleased { text: key.clone() });
+        }
+    }
+
+    #[test]
+    fn typing_selects_by_name_and_pausing_starts_over() {
+        let tree = TempTree::new();
+        tree.file("alpha.txt", 1).file("beta.txt", 1).file("bravo.txt", 1);
+        let (ui, shared) = headless_app();
+        wire(&ui, &shared);
+        ui.show().unwrap();
+        shared.borrow().list.set_items(items_in(&tree));
+        let selected = || shared.borrow().first_selected().unwrap();
+        press(&ui, &["b".into()]);
+        press(&ui, &["r".into()]);
+        assert_eq!(selected(), tree.0.join("bravo.txt"));
+        shared.borrow_mut().typed_at -= TYPE_AHEAD_PAUSE * 2;
+        press(&ui, &["a".into()]);
+        assert_eq!(selected(), tree.0.join("alpha.txt"));
+    }
+
+    #[test]
+    fn special_keys_never_count_as_typed_text() {
+        for key in [Key::Tab, Key::Shift, Key::F5, Key::Menu, Key::UpArrow] {
+            assert!(!is_name_text(&SharedString::from(key)), "{key:?}");
+        }
+        assert!(is_name_text("é") && !is_name_text(""));
     }
 
     #[test]

@@ -74,6 +74,7 @@ cargo test
 | Alt+Left, Alt+Right | Back, forward |
 | Alt+Up, Backspace | Up one level |
 | Enter | Open |
+| Letters and digits | Jump to the next matching name |
 | F5 | Refresh |
 | Esc | Stop scanning, or leave search results |
 | Ctrl+F | Search |
