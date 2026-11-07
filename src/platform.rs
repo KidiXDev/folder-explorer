@@ -562,10 +562,12 @@ pub fn clipboard_sequence() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
 }
 
-pub fn clear_clipboard() {
+pub fn clear_clipboard_if_unchanged(sequence: u32) {
     unsafe {
         if OpenClipboard(null_mut()) != 0 {
-            EmptyClipboard();
+            if GetClipboardSequenceNumber() == sequence {
+                EmptyClipboard();
+            }
             CloseClipboard();
         }
     }
@@ -574,6 +576,7 @@ pub fn clear_clipboard() {
 pub struct ClipboardFiles {
     pub paths: Vec<PathBuf>,
     pub is_cut: bool,
+    pub sequence: u32,
 }
 
 unsafe fn dropped_paths(drop: HDROP) -> Vec<PathBuf> {
@@ -613,9 +616,10 @@ pub fn clipboard_files() -> Option<ClipboardFiles> {
             return None;
         }
         let drop = GetClipboardData(CF_HDROP as u32);
-        let files = (!drop.is_null()).then(|| ClipboardFiles {
-            paths: dropped_paths(drop),
-            is_cut: clipboard_drop_effect() & DROP_EFFECT_MOVE != 0,
+        let files = (!drop.is_null()).then(|| {
+            let paths = dropped_paths(drop);
+            let is_cut = clipboard_drop_effect() & DROP_EFFECT_MOVE != 0;
+            ClipboardFiles { paths, is_cut, sequence: GetClipboardSequenceNumber() }
         });
         CloseClipboard();
         files
@@ -678,6 +682,13 @@ mod tests {
         assert!(local_day_start("2024-13-40").is_none());
         assert!(local_day_start("yesterday").is_none());
         assert!(local_day_start("2024-03").is_none());
+    }
+
+    #[test]
+    fn a_changed_clipboard_is_left_alone() {
+        let before = clipboard_sequence();
+        clear_clipboard_if_unchanged(before.wrapping_add(1));
+        assert_eq!(clipboard_sequence(), before);
     }
 
     #[test]

@@ -76,7 +76,7 @@ enum Message {
     Summary { id: u64, entries: Vec<SummaryEntry> },
     Hashed { run: u64, index: usize, hashes: Option<[String; 4]> },
     Recycled { paths: Vec<PathBuf>, succeeded: bool },
-    Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool },
+    Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool, sequence: u32 },
     RecycleBin(Option<u64>),
 }
 
@@ -367,7 +367,9 @@ impl App {
             }
             Message::Hashed { run, index, hashes } if run == self.hash_run => self.on_hashed(index, hashes),
             Message::Recycled { paths, succeeded } => self.on_recycled(&paths, succeeded),
-            Message::Pasted { paths, target, is_cut, succeeded } => self.on_pasted(&paths, &target, is_cut, succeeded),
+            Message::Pasted { paths, target, is_cut, succeeded, sequence } => {
+                self.on_pasted(&paths, &target, is_cut, succeeded, sequence);
+            }
             Message::RecycleBin(size) => self.show_recycle_bin(size),
             _ => {}
         }
@@ -1262,7 +1264,7 @@ impl App {
 
     fn paste(&mut self, files: ClipboardFiles, owner: usize) {
         let Some(target) = self.editable_folder() else { return };
-        let ClipboardFiles { mut paths, is_cut } = files;
+        let ClipboardFiles { mut paths, is_cut, sequence } = files;
         if is_cut {
             paths.retain(|path| path.parent() != Some(target.as_path()));
         }
@@ -1274,12 +1276,12 @@ impl App {
                 true => platform::move_into(&paths, &target, owner),
                 false => platform::copy_into(&paths, &target, owner),
             };
-            let _ = sender.send(Message::Pasted { paths, target, is_cut, succeeded });
+            let _ = sender.send(Message::Pasted { paths, target, is_cut, succeeded, sequence });
             let _ = sender.send(Message::RecycleBin(platform::recycle_bin_size()));
         });
     }
 
-    fn on_pasted(&mut self, paths: &[PathBuf], target: &Path, is_cut: bool, succeeded: bool) {
+    fn on_pasted(&mut self, paths: &[PathBuf], target: &Path, is_cut: bool, succeeded: bool, sequence: u32) {
         for path in paths {
             if let Some(name) = path.file_name() {
                 self.forget(&target.join(name));
@@ -1290,7 +1292,7 @@ impl App {
             }
         }
         if is_cut && succeeded {
-            platform::clear_clipboard();
+            platform::clear_clipboard_if_unchanged(sequence);
             self.cut_paths.clear();
         }
         self.refresh_tree(Some(target));
