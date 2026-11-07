@@ -277,9 +277,20 @@ pub fn scan_tree(dir: &SubDir, context: &ScanContext, live: &Live) -> Arc<DirNod
 #[derive(Default)]
 pub struct Cache {
     roots: HashMap<PathBuf, Arc<DirNode>>,
+    generation: u64,
 }
 
 impl Cache {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn store_scan(&mut self, generation: u64, path: &Path, node: &Arc<DirNode>) {
+        if generation == self.generation {
+            self.store(path, node);
+        }
+    }
+
     pub fn store(&mut self, path: &Path, node: &Arc<DirNode>) {
         if node.complete {
             self.roots.insert(path.to_path_buf(), node.clone());
@@ -312,6 +323,7 @@ impl Cache {
     }
 
     pub fn invalidate(&mut self, path: &Path) -> Vec<Arc<DirNode>> {
+        self.generation += 1;
         let mut retired = Vec::new();
         self.roots.retain(|root, node| {
             let keep = !root.starts_with(path);
@@ -589,6 +601,26 @@ pub mod tests {
         cache.invalidate(&root.join("FOO").join("inner"));
         assert!(cache.get(&root.join("foo")).is_none());
         assert_eq!(cache.get(&root.join("other")).unwrap().size, 2);
+    }
+
+    #[test]
+    fn scans_started_before_an_invalidation_are_not_stored() {
+        let tree = sample();
+        let mut cache = Cache::default();
+        let started = cache.generation();
+        let node = scan(&tree.0);
+        cache.invalidate(&tree.0);
+        cache.store_scan(started, &tree.0, &node);
+        assert!(cache.get(&tree.0).is_none());
+    }
+
+    #[test]
+    fn scans_with_no_invalidation_since_they_started_are_stored() {
+        let tree = sample();
+        let mut cache = Cache::default();
+        cache.invalidate(&tree.0);
+        cache.store_scan(cache.generation(), &tree.0, &scan(&tree.0));
+        assert_eq!(cache.get(&tree.0).unwrap().size, 100);
     }
 
     #[test]

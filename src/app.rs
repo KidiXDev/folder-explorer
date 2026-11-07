@@ -63,7 +63,15 @@ enum Message {
     Unreadable { scan: u64, reason: String },
     Disk { scan: u64, title: String, usage: Option<DiskUsage> },
     Sized { scan: u64, index: usize, node: Arc<DirNode> },
-    Finished { scan: u64, path: PathBuf, node: Arc<DirNode>, errors: Vec<ScanError>, seconds: f64, from_cache: bool },
+    Finished {
+        scan: u64,
+        generation: u64,
+        path: PathBuf,
+        node: Arc<DirNode>,
+        errors: Vec<ScanError>,
+        seconds: f64,
+        from_cache: bool,
+    },
     Found { search: u64, items: Vec<Item>, seconds: f64 },
     Summary { id: u64, entries: Vec<SummaryEntry> },
     Hashed { run: u64, index: usize, hashes: Option<[String; 4]> },
@@ -117,6 +125,7 @@ struct App {
 
 fn scan_folder(
     scan: u64,
+    generation: u64,
     path: PathBuf,
     known: HashMap<PathBuf, Arc<DirNode>>,
     cancel: Arc<AtomicBool>,
@@ -159,7 +168,7 @@ fn scan_folder(
     node.absorb(children);
     let errors = context.errors.into_inner();
     let seconds = started.elapsed().as_secs_f64();
-    let _ = sender.send(Message::Finished { scan, path, node: Arc::new(node), errors, seconds, from_cache });
+    let _ = sender.send(Message::Finished { scan, generation, path, node: Arc::new(node), errors, seconds, from_cache });
 }
 
 fn describe_error(path: &Path, error: &io::Error) -> String {
@@ -345,8 +354,8 @@ impl App {
             Message::Sized { scan, index, node } if scan == self.scan_id && !self.showing_results => {
                 self.list.update_item(index, |item| item.apply_totals(&node));
             }
-            Message::Finished { scan, path, node, errors, seconds, from_cache } => {
-                self.cache.store(&path, &node);
+            Message::Finished { scan, generation, path, node, errors, seconds, from_cache } => {
+                self.cache.store_scan(generation, &path, &node);
                 if scan == self.scan_id {
                     self.on_finished(&node, errors, seconds, from_cache);
                 }
@@ -505,9 +514,9 @@ impl App {
         self.scan_started = Instant::now();
         self.cancel = Arc::default();
         self.lives = Arc::default();
-        let known = self.cache.known_below(&path);
+        let (known, generation) = (self.cache.known_below(&path), self.cache.generation());
         let (scan, cancel) = (self.scan_id, self.cancel.clone());
-        self.spawn(move |sender| scan_folder(scan, path, known, cancel, sender));
+        self.spawn(move |sender| scan_folder(scan, generation, path, known, cancel, sender));
         self.sync_busy();
     }
 
