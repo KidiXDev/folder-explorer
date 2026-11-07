@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnInfo, FileRow } from "types.slint";
-import { DimLabel, EmptyState, FileIcon, RenameBox } from "controls.slint";
+import { DimLabel, EmptyState, FileIcon, LoadingSpinner, RenameBox } from "controls.slint";
 
 component HeaderCell {
     in property <ColumnInfo> info;
@@ -124,8 +124,15 @@ component Row {
         for column[index] in root.columns: Rectangle {
             width: column.width;
 
+            if index == 1 && root.data.busy: LoadingSpinner {
+                x: 10px;
+                y: (parent.height - self.height) / 2;
+                size: 12px;
+                tint: Theme.accent;
+            }
+
             Text {
-                x: index == 0 ? 36px : 12px;
+                x: index == 0 ? 36px : index == 1 && root.data.busy ? 26px : 12px;
                 width: parent.width - self.x - 12px;
                 height: parent.height;
                 text: root.data.cells[index];

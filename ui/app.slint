@@ -1,7 +1,7 @@
-import { CheckBox, ComboBox, LineEdit, Spinner } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
-import { CommandButton, DimLabel, IconButton, Label, UsageBar } from "controls.slint";
+import { CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, UsageBar } from "controls.slint";
 import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
 import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
@@ -682,8 +682,13 @@ export component AppWindow inherits Window {
             }
 
             Rectangle {
-                height: 1px;
+                height: root.busy ? 2px : 1px;
                 background: Theme.line;
+
+                IndeterminateBar {
+                    width: parent.width;
+                    active: root.busy;
+                }
             }
 
             HorizontalLayout {
@@ -1031,12 +1036,11 @@ export component AppWindow inherits Window {
                     }
 
                     if root.busy: Rectangle {
-                        width: 14px;
+                        width: 15px;
 
-                        Spinner {
-                            width: 14px;
-                            height: 14px;
-                            indeterminate: true;
+                        LoadingSpinner {
+                            size: 14px;
+                            tint: Theme.accent;
                         }
                     }
 

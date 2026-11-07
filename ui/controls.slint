@@ -105,6 +105,39 @@ export component CommandButton {
     }
 }
 
+export component LoadingSpinner {
+    in property <length> size: 15px;
+    in property <brush> tint: Theme.accent;
+
+    width: root.size;
+    height: root.size;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: @image-url("icons/spinner.svg");
+        colorize: root.tint;
+        transform-rotation: 360deg * mod(animation-tick(), 720ms) / 720ms;
+    }
+}
+
+export component IndeterminateBar inherits Rectangle {
+    in property <bool> active;
+
+    height: 2px;
+    clip: true;
+
+    if root.active: Rectangle {
+        property <float> phase: mod(animation-tick(), 1100ms) / 1100ms;
+
+        x: (parent.width + 220px) * self.phase - 220px;
+        width: 220px;
+        height: parent.height;
+        border-radius: 1px;
+        background: @linear-gradient(90deg, transparent 0%, Theme.accent 50%, transparent 100%);
+    }
+}
+
 export component FileIcon {
     in property <image> icon;
     in property <bool> folder;
