@@ -43,6 +43,10 @@ Keeping the tree in memory has a cost: about 115 bytes per file, or 225 MB for 2
 
 Sizes are logical file sizes. Files with several hard links are counted once per link. Junctions and symbolic links are listed but never followed, so nothing is counted twice.
 
+## Download
+
+Grab the latest `folder-explorer-*-windows-x64.zip` from the [Releases](https://github.com/KidiXDev/folder-explorer/releases) page and run `folder-explorer.exe`. Releases are built from `v*` tags.
+
 ## Build
 
 You need [Rust](https://rustup.rs) 1.92 or newer and the MSVC build tools.
