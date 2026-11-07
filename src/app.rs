@@ -32,7 +32,7 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(16);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const SEARCH_DELAY: Duration = Duration::from_millis(180);
 const NEARLY_FULL: f32 = 0.9;
-const DRIVE_ICON_SIZE: u32 = 40;
+const DRIVE_ICON_SIZE: u32 = 32;
 const BYTES_PER_MEGABYTE: f64 = 1_048_576.0;
 const SUMMARY_KINDS: [SummaryKind; 4] = [
     SummaryKind::Extension,
