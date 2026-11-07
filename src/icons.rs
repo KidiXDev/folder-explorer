@@ -15,6 +15,7 @@ use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject,
     GetDIBits, GetObjectW, HBITMAP,
 };
+use windows::Win32::System::Com::Urlmon::E_PENDING;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF, SIIGBF_ICONONLY, SIIGBF_THUMBNAILONLY,
@@ -28,6 +29,8 @@ const MAX_LOADER_THREADS: usize = 6;
 const MAX_QUEUED: usize = 192;
 const CACHE_BYTES: usize = 256 << 20;
 const POLL_INTERVAL: Duration = Duration::from_millis(24);
+const PENDING_RETRIES: u32 = 50;
+const PENDING_RETRY_DELAY: Duration = Duration::from_millis(20);
 const ATTR_OFFLINE: u32 = 0x1000;
 const ATTR_RECALL_ON_OPEN: u32 = 0x4_0000;
 const ATTR_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
@@ -125,11 +128,21 @@ unsafe fn read_bitmap(bitmap: HBITMAP) -> Option<Pixels> {
     }
 }
 
+fn render_bitmap(factory: &IShellItemImageFactory, size: SIZE, flags: SIIGBF) -> Option<HBITMAP> {
+    for _ in 0..PENDING_RETRIES {
+        match unsafe { factory.GetImage(size, flags) } {
+            Err(error) if error.code() == E_PENDING => thread::sleep(PENDING_RETRY_DELAY),
+            result => return result.ok(),
+        }
+    }
+    None
+}
+
 fn shell_image(path: &str, size: u32, flags: SIIGBF) -> Option<Pixels> {
     unsafe {
         let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()?;
         let wanted = SIZE { cx: size as i32, cy: size as i32 };
-        let bitmap = factory.GetImage(wanted, flags).ok()?;
+        let bitmap = render_bitmap(&factory, wanted, flags)?;
         let pixels = read_bitmap(bitmap);
         let _ = DeleteObject(bitmap.into());
         pixels
@@ -317,7 +330,7 @@ impl IconStore {
 
     fn insert(&self, key: IconKey, pixels: Option<Pixels>) {
         let bytes = pixels.as_ref().map_or(0, |pixels| pixels.as_bytes().len());
-        let image = pixels.map_or_else(Image::default, Image::from_rgba8_premultiplied);
+        let image = pixels.map_or_else(Image::default, Image::from_rgba8);
         let entry = Entry { image, bytes, last_used: self.clock.get() };
         let replaced = self.entries.borrow_mut().insert(key, entry);
         let total = self.cached_bytes.get() + bytes - replaced.map_or(0, |entry| entry.bytes);
@@ -350,6 +363,7 @@ mod tests {
     use super::*;
     use crate::item::{ATTR_DIRECTORY, ItemState};
     use crate::scan::Times;
+    use std::sync::Barrier;
 
     fn item(name: &str, is_dir: bool, attrs: u32) -> Item {
         Item {
@@ -438,6 +452,32 @@ mod tests {
         let icon = shell_image(r"C:\Windows", 32, SIIGBF_ICONONLY).unwrap();
         assert_eq!((icon.width(), icon.height()), (32, 32));
         assert!(icon.as_bytes().chunks_exact(4).any(|pixel| pixel[3] != 0));
+    }
+
+    #[test]
+    fn icons_requested_at_the_same_moment_all_arrive() {
+        let paths = [r"C:\Windows\System32", r"C:\Windows\Fonts", r"C:\Windows\regedit.exe", r"C:\Program Files"];
+        let gate = Arc::new(Barrier::new(paths.len()));
+        let loaders: Vec<_> = paths
+            .into_iter()
+            .map(|path| {
+                let gate = gate.clone();
+                thread::spawn(move || {
+                    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+                    gate.wait();
+                    shell_image(path, 32, SIIGBF_ICONONLY).is_some()
+                })
+            })
+            .collect();
+        assert!(loaders.into_iter().all(|loader| loader.join().unwrap()));
+    }
+
+    #[test]
+    fn shell_bitmaps_use_straight_alpha() {
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let icon = shell_image(r"C:\Windows\explorer.exe", 48, SIIGBF_ICONONLY).unwrap();
+        let brighter_than_alpha = |pixel: &[u8]| pixel[..3].iter().any(|channel| *channel > pixel[3]);
+        assert!(icon.as_bytes().chunks_exact(4).any(brighter_than_alpha));
     }
 
     #[test]
