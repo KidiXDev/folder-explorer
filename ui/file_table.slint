@@ -242,6 +242,10 @@ export component FileTable {
         rename-box.start(name, selection-end);
     }
 
+    public pure function menu-anchor(row: int) -> Point {
+        return { x: 36px, y: 32px + max(0px, (row + 1) * Theme.row-height + list.content-y) };
+    }
+
     focus := FocusScope {
         width: parent.width;
         height: parent.height;

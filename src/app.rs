@@ -1415,6 +1415,17 @@ fn delete_selection(shared: &Shared, permanently: bool) {
     }
 }
 
+fn show_context_menu(shared: &Shared) {
+    let (ui, row) = {
+        let app = shared.borrow();
+        let row = app.list.state().focused_row();
+        (app.ui(), row)
+    };
+    if !ui.get_showing_drives() {
+        ui.invoke_show_list_menu(row.map_or(-1, |row| row as i32));
+    }
+}
+
 fn describe_rename_error(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::AlreadyExists => "Something with that name already exists here.".into(),
@@ -1477,6 +1488,7 @@ fn run_action(shared: &Shared, action: &str) {
         "open" => open_selection(shared),
         "delete" => delete_selection(shared, false),
         "delete-permanently" => delete_selection(shared, true),
+        "context-menu" => show_context_menu(shared),
         "export" => export_list(shared),
         "new-folder" => new_folder(shared),
         "paste" => paste(shared),
@@ -1700,6 +1712,30 @@ mod tests {
         }
         for key in keys.iter().rev() {
             ui.window().dispatch_event(WindowEvent::KeyReleased { text: key.clone() });
+        }
+    }
+
+    #[test]
+    fn shortcuts_reach_their_actions() {
+        let (ui, _shared) = headless_app();
+        ui.show().unwrap();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let sink = actions.clone();
+        ui.on_action(move |action| sink.borrow_mut().push(action.to_string()));
+        let [shift, control, alt] = [Key::Shift, Key::Control, Key::Alt].map(SharedString::from);
+        let cases: [(&[SharedString], &str); 8] = [
+            (&[Key::Delete.into()], "delete"),
+            (&[shift.clone(), Key::Delete.into()], "delete-permanently"),
+            (&[control.clone(), "d".into()], "delete"),
+            (&[alt, Key::Return.into()], "properties"),
+            (&[control.clone(), "r".into()], "refresh"),
+            (&[control.clone(), shift.clone(), "C".into()], "copy-path"),
+            (&[control, "c".into()], "copy"),
+            (&[shift, Key::F10.into()], "context-menu"),
+        ];
+        for (keys, action) in cases {
+            press(&ui, keys);
+            assert_eq!(actions.borrow_mut().drain(..).collect::<Vec<_>>(), [action], "{keys:?}");
         }
     }
 

@@ -200,6 +200,10 @@ impl ListState {
             .find(|row| self.item(*row).is_some_and(|item| name_starts_with(&item.name, prefix)))
     }
 
+    pub fn focused_row(&self) -> Option<usize> {
+        self.is_row_selected(self.cursor).then_some(self.cursor)
+    }
+
     pub fn mark_cut(&mut self, paths: &HashSet<PathBuf>) {
         self.cut = self.items.iter().map(|item| !paths.is_empty() && paths.contains(&item.path())).collect();
     }

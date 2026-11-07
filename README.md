@@ -74,16 +74,19 @@ cargo test
 | Alt+Left, Alt+Right | Back, forward |
 | Alt+Up, Backspace | Up one level |
 | Enter | Open |
+| Alt+Enter | Properties |
 | Letters and digits | Jump to the next matching name |
-| F5 | Refresh |
+| Menu key, Shift+F10 | Context menu |
+| F5, Ctrl+R | Refresh |
 | Esc | Stop scanning, or leave search results |
-| Ctrl+F | Search |
-| Ctrl+L | Edit the path |
+| Ctrl+F, Ctrl+E, F3 | Search |
+| Ctrl+L, Alt+D, F4 | Edit the path |
 | Ctrl+A | Select all |
 | F2 | Rename |
 | Ctrl+Shift+N | New folder |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste |
-| Delete | Move to Recycle Bin |
+| Ctrl+Shift+C | Copy path |
+| Delete, Ctrl+D | Move to Recycle Bin |
 | Shift+Delete | Delete permanently |
 
 ## Project layout

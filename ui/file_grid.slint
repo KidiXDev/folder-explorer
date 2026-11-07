@@ -224,6 +224,13 @@ export component FileGrid {
         rename-box.start(name, selection-end);
     }
 
+    public pure function menu-anchor(index: int) -> Point {
+        return {
+            x: root.gutter + root.column-of(index) * root.cell-width + 12px,
+            y: max(0px, (root.line-of(index) + 1) * root.cell-height + list.content-y),
+        };
+    }
+
     focus := FocusScope {
         width: parent.width;
         height: parent.height;

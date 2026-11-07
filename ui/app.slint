@@ -647,6 +647,15 @@ export component AppWindow inherits Window {
         }
     }
 
+    public function show-list-menu(row: int) {
+        if (row >= 0) {
+            root.reveal-row(row);
+        }
+        root.menu-opening();
+        let anchor = root.details ? table.menu-anchor(max(row, 0)) : grid.menu-anchor(max(row, 0));
+        list-menu.show({ x: anchor.x, y: anchor.y + list-menu.banner-height });
+    }
+
     forward-focus: keys;
 
     keys := FocusScope {
@@ -657,13 +666,21 @@ export component AppWindow inherits Window {
             if (event.modifiers.alt && event.text == Key.LeftArrow) { root.go-back(); return accept; }
             if (event.modifiers.alt && event.text == Key.RightArrow) { root.go-forward(); return accept; }
             if (event.modifiers.alt && event.text == Key.UpArrow) { root.go-up(); return accept; }
+            if (event.modifiers.alt && event.text == Key.Return) { root.action("properties"); return accept; }
+            if (event.modifiers.alt && (event.text == "d" || event.text == "D")) { breadcrumbs.edit(); return accept; }
+            if (event.text == Key.Menu || (event.modifiers.shift && event.text == Key.F10)) { root.action("context-menu"); return accept; }
             if (event.text == Key.F5) { root.action("refresh"); return accept; }
+            if (event.modifiers.control && (event.text == "r" || event.text == "R")) { root.action("refresh"); return accept; }
             if (event.text == Key.Escape && root.errors-open) { root.errors-open = false; return accept; }
             if (event.text == Key.Escape) { root.cancel-pressed(); return accept; }
-            if (event.modifiers.control && (event.text == "f" || event.text == "F")) { search-box.focus(); return accept; }
+            if (event.text == Key.F3) { search-box.focus(); return accept; }
+            if (event.modifiers.control && (event.text == "f" || event.text == "F" || event.text == "e" || event.text == "E")) { search-box.focus(); return accept; }
+            if (event.text == Key.F4) { breadcrumbs.edit(); return accept; }
             if (event.modifiers.control && (event.text == "l" || event.text == "L")) { breadcrumbs.edit(); return accept; }
             if (event.text == Key.F2) { root.action("rename"); return accept; }
             if (event.modifiers.control && event.modifiers.shift && (event.text == "n" || event.text == "N")) { root.action("new-folder"); return accept; }
+            if (event.modifiers.control && event.modifiers.shift && (event.text == "c" || event.text == "C")) { root.action("copy-path"); return accept; }
+            if (event.modifiers.control && (event.text == "d" || event.text == "D")) { root.action("delete"); return accept; }
             if (event.modifiers.control && (event.text == "x" || event.text == "X")) { root.action("cut"); return accept; }
             if (event.modifiers.control && (event.text == "v" || event.text == "V")) { root.action("paste"); return accept; }
             if (event.text == Key.UpArrow) { root.cursor-moved(0 - root.vertical-step, event.modifiers.shift); return accept; }
