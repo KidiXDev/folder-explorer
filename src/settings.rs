@@ -3,12 +3,18 @@ use crate::item::Column;
 use crate::list::View;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TreeMemory {
+    pub auto_expand_off: bool,
+    pub computer_closed: bool,
+    pub quick_access_closed: bool,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub unit: Unit,
-    pub view: View,
     pub show_hidden: bool,
     pub summary_open: bool,
     pub columns: Vec<Column>,
@@ -17,13 +23,14 @@ pub struct Settings {
     pub descending: bool,
     pub sidebar_width: f32,
     pub window_size: (u32, u32),
+    pub tree: TreeMemory,
+    folder_views: HashMap<String, View>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             unit: Unit::Auto,
-            view: View::default(),
             show_hidden: true,
             summary_open: false,
             columns: Column::DEFAULT.to_vec(),
@@ -32,12 +39,18 @@ impl Default for Settings {
             descending: false,
             sidebar_width: 240.0,
             window_size: (1180, 720),
+            tree: TreeMemory::default(),
+            folder_views: HashMap::new(),
         }
     }
 }
 
 fn column_id(column: Column) -> usize {
     Column::ALL.iter().position(|known| *known == column).unwrap_or(0)
+}
+
+fn folder_key(folder: &Path) -> String {
+    folder.to_string_lossy().to_lowercase()
 }
 
 impl Settings {
@@ -47,6 +60,18 @@ impl Settings {
 
     pub fn set_width(&mut self, column: Column, width: f32) {
         self.widths.insert(column_id(column), width);
+    }
+
+    pub fn view_of(&self, folder: &Path) -> View {
+        self.folder_views.get(&folder_key(folder)).copied().unwrap_or_default()
+    }
+
+    pub fn set_view_of(&mut self, folder: &Path, view: View) {
+        if view == View::default() {
+            self.folder_views.remove(&folder_key(folder));
+        } else {
+            self.folder_views.insert(folder_key(folder), view);
+        }
     }
 
     fn file() -> Option<PathBuf> {
@@ -81,11 +106,16 @@ impl Settings {
                     self.unit = *unit;
                 }
             }
-            "view" => {
-                if let Some(view) = value.parse().ok().and_then(|index: usize| View::ALL.get(index)) {
-                    self.view = *view;
+            "folder_view" => {
+                if let Some((index, folder)) = value.split_once('|')
+                    && let Some(view) = index.parse().ok().and_then(|index: usize| View::ALL.get(index))
+                {
+                    self.set_view_of(Path::new(folder), *view);
                 }
             }
+            "tree_auto_expand_off" => self.tree.auto_expand_off = value == "true",
+            "tree_computer_closed" => self.tree.computer_closed = value == "true",
+            "tree_quick_access_closed" => self.tree.quick_access_closed = value == "true",
             "show_hidden" => self.show_hidden = value == "true",
             "summary_open" => self.summary_open = value == "true",
             "columns" => {
@@ -126,10 +156,13 @@ impl Settings {
         let mut widths: Vec<_> = self.widths.iter().collect();
         widths.sort_by_key(|(id, _)| **id);
         let widths: Vec<String> = widths.iter().map(|(id, width)| format!("{id}:{width}")).collect();
+        let mut folder_views: Vec<_> = self.folder_views.iter().collect();
+        folder_views.sort_by_key(|(folder, _)| *folder);
+        let folder_views: String =
+            folder_views.iter().map(|(folder, view)| format!("folder_view={}|{folder}\n", view.index())).collect();
         format!(
-            "unit={}\nview={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_size={}x{}\n",
+            "unit={}\nshow_hidden={}\nsummary_open={}\ncolumns={}\nwidths={}\nsort={}\ndescending={}\nsidebar_width={}\nwindow_size={}x{}\ntree_auto_expand_off={}\ntree_computer_closed={}\ntree_quick_access_closed={}\n{folder_views}",
             self.unit.index(),
-            self.view.index(),
             self.show_hidden,
             self.summary_open,
             columns.join(","),
@@ -139,6 +172,9 @@ impl Settings {
             self.sidebar_width,
             self.window_size.0,
             self.window_size.1,
+            self.tree.auto_expand_off,
+            self.tree.computer_closed,
+            self.tree.quick_access_closed,
         )
     }
 }
@@ -151,7 +187,6 @@ mod tests {
     fn settings_survive_a_round_trip() {
         let mut settings = Settings {
             unit: Unit::Gigabytes,
-            view: View::Tiles,
             show_hidden: false,
             summary_open: true,
             columns: vec![Column::Name, Column::Size, Column::Sha256],
@@ -159,20 +194,43 @@ mod tests {
             descending: true,
             sidebar_width: 300.0,
             window_size: (1600, 900),
+            tree: TreeMemory { auto_expand_off: true, computer_closed: true, quick_access_closed: true },
             ..Settings::default()
         };
         settings.set_width(Column::Name, 410.5);
+        settings.set_view_of(Path::new(r"C:\Old=Data\Photos"), View::Tiles);
+        settings.set_view_of(Path::new(r"D:\"), View::Large);
         assert_eq!(Settings::parse(&settings.serialize()), settings);
     }
 
     #[test]
     fn broken_files_fall_back_to_defaults() {
-        let garbage = "unit=99\nview=99\ncolumns=abc\nwindow_size=wide\nsort=-1\nnonsense\n=\n";
+        let garbage =
+            "unit=99\nview=99\ncolumns=abc\nwindow_size=wide\nsort=-1\nfolder_view=99|C:\\a\nfolder_view=C:\\b\nnonsense\n=\n";
         let settings = Settings::parse(garbage);
         assert_eq!(settings.unit, Unit::Auto);
-        assert_eq!(settings.view, View::Details);
+        assert!(settings.folder_views.is_empty());
         assert_eq!(settings.window_size, (1180, 720));
         assert_eq!(settings.columns, [Column::Name, Column::Size]);
+    }
+
+    #[test]
+    fn every_folder_starts_in_details_and_keeps_its_own_view() {
+        let mut settings = Settings::default();
+        let photos = Path::new(r"C:\Users\Me\Photos");
+        assert_eq!(settings.view_of(photos), View::Details);
+        settings.set_view_of(photos, View::Large);
+        assert_eq!(settings.view_of(Path::new(r"c:\users\me\PHOTOS")), View::Large);
+        assert_eq!(settings.view_of(Path::new(r"C:\Users\Me")), View::Details);
+    }
+
+    #[test]
+    fn folders_back_on_details_are_not_stored() {
+        let mut settings = Settings::default();
+        let photos = Path::new(r"C:\Photos");
+        settings.set_view_of(photos, View::Large);
+        settings.set_view_of(photos, View::Details);
+        assert!(settings.folder_views.is_empty());
     }
 
     #[test]

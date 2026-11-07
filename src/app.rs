@@ -228,20 +228,19 @@ fn drive_card(drive: &Drive, icon: Image, unit: Unit) -> DriveCard {
 
 impl App {
     fn new(ui: &AppWindow, me: rc::Weak<RefCell<App>>, settings: Settings, icons: Rc<IconStore>) -> Self {
-        let mut state = ListState::new(
+        let state = ListState::new(
             settings.columns.clone(),
             settings.unit,
             settings.sort,
             settings.descending,
             settings.show_hidden,
         );
-        state.view = settings.view;
         let (sender, receiver) = mpsc::channel();
         Self {
             ui: ui.as_weak(),
             me,
             list: Rc::new(ListModel::new(state, icons.clone())),
-            sidebar: Sidebar::new(icons.clone()),
+            sidebar: Sidebar::new(icons.clone(), settings.tree),
             icons,
             drive_icons_missing: Cell::new(false),
             settings,
@@ -413,6 +412,9 @@ impl App {
         self.summary.clear();
         self.icons.cancel_queued();
         self.list.set_items(Vec::new());
+        if let Location::Folder(path) = &self.location {
+            self.show_view(self.settings.view_of(path));
+        }
         let ui = self.ui();
         ui.set_search_text(SharedString::new());
         ui.invoke_scroll_to_top();
@@ -905,8 +907,14 @@ impl App {
 
     fn choose_view(&mut self, index: usize) {
         let view = View::ALL[index];
-        self.settings.view = view;
-        self.ui().set_view_index(index as i32);
+        if let Location::Folder(path) = &self.location {
+            self.settings.set_view_of(path, view);
+        }
+        self.show_view(view);
+    }
+
+    fn show_view(&self, view: View) {
+        self.ui().set_view_index(view.index() as i32);
         self.icons.cancel_queued();
         self.list.update(|state| state.view = view);
     }
@@ -1267,6 +1275,7 @@ impl App {
         self.settings.window_size = (size.width as u32, size.height as u32);
         self.settings.sidebar_width = ui.get_sidebar_width();
         self.settings.summary_open = ui.get_summary_open();
+        self.settings.tree = self.sidebar.memory();
         self.settings.save();
     }
 }
@@ -1482,7 +1491,6 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
     let settings = Settings::load();
     ui.window().set_size(LogicalSize::new(settings.window_size.0 as f32, settings.window_size.1 as f32));
     ui.set_unit_index(settings.unit.index() as i32);
-    ui.set_view_index(settings.view.index() as i32);
     ui.set_show_hidden(settings.show_hidden);
     ui.set_summary_open(settings.summary_open);
     ui.set_sidebar_width(settings.sidebar_width);

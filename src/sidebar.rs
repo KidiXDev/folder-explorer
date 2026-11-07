@@ -1,10 +1,10 @@
 use crate::icons::{IconStore, THIS_PC};
 use crate::item::compare_text;
 use crate::platform::{Drive, QUICK_ACCESS};
+use crate::settings::TreeMemory;
 use crate::ui::TreeRow;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::Cell;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -29,10 +29,8 @@ pub struct Sidebar {
     nodes: Vec<Node>,
     root: usize,
     pins: Vec<(PathBuf, String)>,
-    quick_access_closed: bool,
     drives: Vec<(PathBuf, String)>,
-    closed: HashSet<PathBuf>,
-    computer_closed: bool,
+    memory: TreeMemory,
     model: Rc<VecModel<TreeRow>>,
     selected: Option<PathBuf>,
     computer_selected: bool,
@@ -43,24 +41,22 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn new(icons: Rc<IconStore>) -> Self {
+    pub fn new(icons: Rc<IconStore>, memory: TreeMemory) -> Self {
         let computer = Node {
             path: None,
             name: "This PC".into(),
             depth: 0,
             kind: KIND_COMPUTER,
             attrs: 0,
-            expanded: true,
+            expanded: !memory.computer_closed,
             loaded: true,
         };
         let sidebar = Self {
             nodes: vec![computer],
             root: 0,
             pins: Vec::new(),
-            quick_access_closed: false,
             drives: Vec::new(),
-            closed: HashSet::new(),
-            computer_closed: false,
+            memory,
             model: Rc::new(VecModel::default()),
             selected: None,
             computer_selected: true,
@@ -75,6 +71,10 @@ impl Sidebar {
 
     pub fn model(&self) -> ModelRc<TreeRow> {
         ModelRc::from(self.model.clone())
+    }
+
+    pub fn memory(&self) -> TreeMemory {
+        self.memory
     }
 
     fn sync(&self) {
@@ -118,7 +118,7 @@ impl Sidebar {
         if let Some(pin) = (0..self.root).find(|&row| self.nodes[row].path.as_ref() == Some(selected)) {
             return Some(pin);
         }
-        if self.computer_closed {
+        if self.memory.computer_closed {
             return Some(self.root);
         }
         (self.root..self.nodes.len())
@@ -160,10 +160,10 @@ impl Sidebar {
             depth: 0,
             kind: KIND_QUICK_ACCESS,
             attrs: 0,
-            expanded: !self.quick_access_closed,
+            expanded: !self.memory.quick_access_closed,
             loaded: true,
         });
-        let shown: &[(PathBuf, String)] = if self.quick_access_closed { &[] } else { &self.pins };
+        let shown: &[(PathBuf, String)] = if self.memory.quick_access_closed { &[] } else { &self.pins };
         let pins = shown.iter().map(|(path, name)| Node {
             path: Some(path.clone()),
             name: name.clone(),
@@ -181,9 +181,14 @@ impl Sidebar {
     }
 
     pub fn set_drives(&mut self, drives: &[Drive]) -> Option<PathBuf> {
-        self.drives = drives.iter().map(|drive| (drive.root.clone(), drive.title.clone())).collect();
+        let drives: Vec<(PathBuf, String)> =
+            drives.iter().map(|drive| (drive.root.clone(), drive.title.clone())).collect();
+        if drives == self.drives {
+            return None;
+        }
+        self.drives = drives;
         self.nodes.truncate(self.root + 1);
-        if !self.computer_closed {
+        if !self.memory.computer_closed {
             self.nodes[self.root].expanded = true;
             self.nodes.extend(self.drives.iter().map(|(root, title)| Node {
                 path: Some(root.clone()),
@@ -216,29 +221,27 @@ impl Sidebar {
     pub fn toggle(&mut self, row: usize) -> Option<PathBuf> {
         let node = self.nodes.get(row)?;
         if node.kind == KIND_QUICK_ACCESS {
-            self.quick_access_closed = !self.quick_access_closed;
+            self.memory.quick_access_closed = !self.memory.quick_access_closed;
             self.show_pins();
             return None;
         }
+        self.target = None;
+        self.memory.auto_expand_off = node.expanded;
         if node.kind == KIND_COMPUTER {
-            self.target = None;
             if node.expanded {
-                self.computer_closed = true;
+                self.memory.computer_closed = true;
                 self.collapse(row);
             } else {
-                self.computer_closed = false;
+                self.memory.computer_closed = false;
                 self.expand_computer();
             }
             return None;
         }
         let path = node.path.clone()?;
-        self.target = None;
         if node.expanded {
-            self.closed.insert(path);
             self.collapse(row);
             return None;
         }
-        self.closed.remove(&path);
         Some(path)
     }
 
@@ -279,13 +282,6 @@ impl Sidebar {
             .iter()
             .position(|node| node.depth <= depth)
             .map_or(self.nodes.len(), |offset| row + 1 + offset);
-        for index in row..end {
-            if self.nodes[index].expanded
-                && let Some(path) = &self.nodes[index].path
-            {
-                self.closed.insert(path.clone());
-            }
-        }
         self.nodes.drain(row + 1..end);
         self.nodes[row].expanded = false;
         if self.nodes[row].kind != KIND_COMPUTER {
@@ -353,17 +349,12 @@ impl Sidebar {
     }
 
     fn advance(&mut self) -> Option<PathBuf> {
-        if self.computer_closed {
-            self.target = None;
-            return None;
-        }
         let target = self.target.clone()?;
         let row = (self.root..self.nodes.len())
             .filter(|row| self.nodes[*row].path.as_ref().is_some_and(|path| target.starts_with(path)))
             .max_by_key(|row| self.nodes[*row].depth)?;
         let node = &self.nodes[row];
-        let closed_by_user = node.path.as_ref().is_some_and(|path| self.closed.contains(path));
-        if node.path.as_deref() == Some(target.as_path()) || (node.loaded && node.expanded) || closed_by_user {
+        if self.memory.auto_expand_off || node.path.as_deref() == Some(target.as_path()) || (node.loaded && node.expanded) {
             self.target = None;
             self.scroll_pending = true;
             return None;
@@ -386,10 +377,74 @@ mod tests {
     }
 
     fn sidebar_with_pin(path: &str) -> Sidebar {
-        let mut sidebar = Sidebar::new(IconStore::new());
+        let mut sidebar = Sidebar::new(IconStore::new(), TreeMemory::default());
         sidebar.set_drives(&[drive(r"C:\", "Acer (C:)")]);
         sidebar.set_pins(vec![(PathBuf::from(path), "Pinned".into())]);
         sidebar
+    }
+
+    fn two_drives() -> [Drive; 2] {
+        [drive(r"C:\", "Acer (C:)"), drive(r"D:\", "Data (D:)")]
+    }
+
+    fn sidebar_with_two_drives(memory: TreeMemory) -> Sidebar {
+        let mut sidebar = Sidebar::new(IconStore::new(), memory);
+        sidebar.set_drives(&two_drives());
+        sidebar
+    }
+
+    const AUTO_EXPAND_OFF: TreeMemory = TreeMemory { auto_expand_off: true, computer_closed: false, quick_access_closed: false };
+
+    #[test]
+    fn a_manual_collapse_stops_auto_expanding_on_every_drive() {
+        let mut sidebar = sidebar_with_two_drives(TreeMemory::default());
+        assert_eq!(sidebar.reveal(Some(Path::new(r"C:\Users"))), Some(PathBuf::from(r"C:\")));
+        sidebar.set_children(Path::new(r"C:\"), vec![("Users".into(), 0)]);
+        assert_eq!(sidebar.toggle(1), None);
+        assert_eq!(sidebar.reveal(Some(Path::new(r"D:\Games"))), None);
+        assert!(sidebar.memory().auto_expand_off);
+    }
+
+    #[test]
+    fn a_manual_expand_turns_auto_expanding_back_on() {
+        let mut sidebar = sidebar_with_two_drives(AUTO_EXPAND_OFF);
+        assert_eq!(sidebar.toggle(2), Some(PathBuf::from(r"D:\")));
+        assert_eq!(sidebar.reveal(Some(Path::new(r"C:\Users"))), Some(PathBuf::from(r"C:\")));
+        assert!(!sidebar.memory().auto_expand_off);
+    }
+
+    #[test]
+    fn a_remembered_collapse_still_applies_after_a_restart() {
+        let mut sidebar = sidebar_with_two_drives(AUTO_EXPAND_OFF);
+        assert_eq!(sidebar.reveal(Some(Path::new(r"C:\Users"))), None);
+        assert_eq!(sidebar.model().row_count(), 3);
+    }
+
+    #[test]
+    fn remembered_sections_start_collapsed() {
+        let memory = TreeMemory { auto_expand_off: true, computer_closed: true, quick_access_closed: true };
+        let mut sidebar = sidebar_with_two_drives(memory);
+        sidebar.set_pins(vec![(PathBuf::from(r"C:\Users"), "Users".into())]);
+        assert_eq!(sidebar.model().row_count(), 2);
+    }
+
+    #[test]
+    fn collapsing_quick_access_leaves_auto_expanding_on() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users\Me");
+        assert_eq!(sidebar.toggle(0), None);
+        assert!(sidebar.memory().quick_access_closed);
+        assert!(!sidebar.memory().auto_expand_off);
+    }
+
+    #[test]
+    fn returning_to_this_pc_keeps_the_tree_expanded() {
+        let mut sidebar = sidebar_with_two_drives(TreeMemory::default());
+        sidebar.reveal(Some(Path::new(r"C:\Users")));
+        sidebar.set_children(Path::new(r"C:\"), vec![("Users".into(), 0)]);
+        sidebar.reveal(None);
+        assert_eq!(sidebar.set_drives(&two_drives()), None);
+        assert!(sidebar.is_expanded(Path::new(r"C:\")));
+        assert_eq!(sidebar.model().row_count(), 4);
     }
 
     #[test]
@@ -461,7 +516,7 @@ mod tests {
 
     #[test]
     fn closed_branch_is_not_forced_open_when_navigating_inside_it() {
-        let mut sidebar = Sidebar::new(IconStore::new());
+        let mut sidebar = Sidebar::new(IconStore::new(), TreeMemory::default());
         sidebar.set_drives(&[drive(r"C:\", "Acer (C:)")]);
 
         // Auto-expand when opening C:\Users\Me initially
@@ -488,7 +543,7 @@ mod tests {
 
     #[test]
     fn computer_root_can_be_collapsed_and_stays_closed_on_navigation() {
-        let mut sidebar = Sidebar::new(IconStore::new());
+        let mut sidebar = Sidebar::new(IconStore::new(), TreeMemory::default());
         sidebar.set_drives(&[drive(r"C:\", "Acer (C:)")]);
         assert_eq!(sidebar.model().row_count(), 2);
 
