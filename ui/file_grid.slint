@@ -228,6 +228,10 @@ export component FileGrid {
 
         Rectangle {
             TouchArea {
+                y: max(0px, root.lines * root.cell-height + list.content-y);
+                width: list.visible-width;
+                height: max(0px, list.visible-height - self.y);
+                z: 1;
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down) {
                         focus.focus();
@@ -246,6 +250,19 @@ export component FileGrid {
 
                 for line in root.lines: Rectangle {
                     height: root.cell-height;
+
+                    TouchArea {
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                focus.focus();
+                                if (event.button == PointerEventButton.left) {
+                                    root.background-pressed();
+                                } else if (event.button == PointerEventButton.right) {
+                                    root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                                }
+                            }
+                        }
+                    }
 
                     for column in root.columns: slot := Rectangle {
                         property <int> index: root.index-at(line, column);

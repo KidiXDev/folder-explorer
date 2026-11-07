@@ -80,23 +80,26 @@ component Row {
     in property <[ColumnInfo]> columns;
     in property <length> total-width;
     callback pressed(bool, bool);
+    callback background-pressed();
     callback right-pressed(length, length);
+    callback background-menu(length, length);
     callback activated();
 
     height: Theme.row-height;
     min-width: root.total-width;
+    property <bool> hovered: touch.has-hover && touch.mouse-x < root.total-width;
 
     Rectangle {
         x: 6px;
         y: 1px;
-        width: root.width - 12px;
+        width: root.total-width - 12px;
         height: parent.height - 2px;
         border-radius: Theme.radius;
         border-width: root.data.selected ? 1px : 0px;
         border-color: Theme.selected-border;
-        background: root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
-            : touch.pressed ? Theme.pressed
-            : touch.has-hover ? Theme.hover
+        background: root.data.selected ? (root.hovered ? Theme.selected-hover : Theme.selected)
+            : root.hovered && touch.pressed ? Theme.pressed
+            : root.hovered ? Theme.hover
             : transparent;
         animate background { duration: 110ms; easing: ease-out; }
     }
@@ -130,7 +133,7 @@ component Row {
         height: parent.height - 10px;
         border-radius: Theme.radius-sm;
         background: root.data.warn ? Theme.warning : Theme.accent;
-        opacity: root.data.selected || touch.has-hover ? 0.28 : 0.18;
+        opacity: root.data.selected || root.hovered ? 0.28 : 0.18;
         animate width { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
         animate opacity { duration: 120ms; }
     }
@@ -178,13 +181,21 @@ component Row {
         pointer-event(event) => {
             if (event.kind == PointerEventKind.down) {
                 if (event.button == PointerEventButton.left) {
-                    root.pressed(event.modifiers.control, event.modifiers.shift);
+                    if (self.mouse-x < root.total-width) {
+                        root.pressed(event.modifiers.control, event.modifiers.shift);
+                    } else {
+                        root.background-pressed();
+                    }
                 } else if (event.button == PointerEventButton.right) {
-                    root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    if (self.mouse-x < root.total-width) {
+                        root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    } else {
+                        root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
                 }
             }
         }
-        double-clicked => { root.activated(); }
+        double-clicked => { if (self.mouse-x < root.total-width) { root.activated(); } }
     }
 }
 
@@ -261,6 +272,11 @@ export component FileTable {
 
             Rectangle {
                 TouchArea {
+                    y: max(0px, root.rows.length * Theme.row-height + list.content-y);
+                    width: list.visible-width;
+                    // Leave the Fluent horizontal scrollbar available below short lists.
+                    height: max(0px, list.visible-height - self.y - (list.content-width > list.visible-width ? 14px : 0px));
+                    z: 1;
                     pointer-event(event) => {
                         if (event.kind == PointerEventKind.down) {
                             focus.focus();
@@ -284,6 +300,14 @@ export component FileTable {
                         pressed(control, shift) => {
                             focus.focus();
                             root.row-pressed(index, control, shift);
+                        }
+                        background-pressed => {
+                            focus.focus();
+                            root.background-pressed();
+                        }
+                        background-menu(x, y) => {
+                            focus.focus();
+                            root.background-menu(x, y);
                         }
                         right-pressed(x, y) => {
                             focus.focus();
