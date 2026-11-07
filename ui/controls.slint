@@ -40,18 +40,19 @@ export component PopoverItem inherits Rectangle {
         background: !root.enabled ? transparent
             : touch.pressed ? Theme.pressed
             : (touch.has-hover || root.highlighted || root.active-submenu) ? Theme.hover
+            : (root.radio && root.checked) ? Theme.selected
             : transparent;
         animate background { duration: 110ms; easing: ease-out; }
 
         if root.radio: Rectangle {
-            x: 15px - self.width / 2;
+            x: 0px;
             y: (parent.height - self.height) / 2;
-            width: root.checked ? 6px : 0px;
-            height: root.checked ? 6px : 0px;
-            border-radius: self.width / 2;
+            width: 3px;
+            height: root.checked ? 16px : 0px;
+            border-radius: 1.5px;
             background: Theme.accent;
             opacity: root.checked ? 1 : 0;
-            animate width, height { duration: 150ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate height { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
             animate opacity { duration: 120ms; easing: ease-out; }
         }
 
@@ -69,7 +70,7 @@ export component PopoverItem inherits Rectangle {
         }
 
         if root.icon.width > 0: Image {
-            x: 28px;
+            x: root.checkable && !root.radio ? 28px : 12px;
             y: (parent.height - self.height) / 2;
             width: 16px;
             height: 16px;
@@ -80,7 +81,7 @@ export component PopoverItem inherits Rectangle {
         }
 
         Text {
-            x: root.icon.width > 0 ? 52px : 30px;
+            x: root.icon.width > 0 ? (root.checkable && !root.radio ? 52px : 36px) : (root.checkable && !root.radio ? 32px : 14px);
             width: parent.width - self.x - (root.submenu ? 28px : 12px);
             height: parent.height;
             text: root.text;
@@ -255,13 +256,13 @@ export component MenuPopover inherits Rectangle {
         height: root.full-height * (root.open ? (0.86 + 0.14 * root.enter) : (0.96 + 0.04 * root.fade));
         opacity: root.open ? clamp(root.enter * 1.25, 0, 1) : root.fade;
         clip: true;
-        background: Theme.dark ? #2b2b2b : #fcfcfc;
+        background: Theme.flyout;
         border-radius: Theme.radius-lg;
         border-width: 1px;
-        border-color: Theme.line-strong;
-        drop-shadow-blur: 24px;
+        border-color: Theme.flyout-border;
+        drop-shadow-blur: 28px;
         drop-shadow-offset-y: 8px;
-        drop-shadow-color: Theme.dark ? #00000068 : #00000024;
+        drop-shadow-color: Theme.dark ? #00000072 : #00000022;
 
         TouchArea {
             enabled: root.open;
@@ -323,13 +324,13 @@ export component SubmenuPopover inherits Rectangle {
     height: root.full-height * (root.open ? (0.88 + 0.12 * root.enter) : (0.96 + 0.04 * root.fade));
     opacity: root.open ? clamp(root.enter * 1.25, 0, 1) : root.fade;
     clip: true;
-    background: Theme.dark ? #2b2b2b : #fcfcfc;
+    background: Theme.flyout;
     border-radius: Theme.radius-lg;
     border-width: 1px;
-    border-color: Theme.line-strong;
-    drop-shadow-blur: 24px;
+    border-color: Theme.flyout-border;
+    drop-shadow-blur: 28px;
     drop-shadow-offset-y: 8px;
-    drop-shadow-color: Theme.dark ? #00000068 : #00000024;
+    drop-shadow-color: Theme.dark ? #00000072 : #00000022;
 
     TouchArea {
         enabled: root.open;
@@ -458,7 +459,7 @@ export component CommandButton {
     Rectangle {
         border-radius: Theme.radius;
         border-width: root.enabled && (root.active || touch.has-hover || touch.pressed) ? 1px : 0px;
-        border-color: root.active ? Theme.selected-border : Theme.line;
+        border-color: root.active ? Theme.selected-border : Theme.control-border;
         background: !root.enabled ? transparent
             : touch.pressed ? Theme.pressed
             : root.active ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
@@ -472,11 +473,17 @@ export component CommandButton {
         padding-right: root.text != "" ? 10px : 8px;
         spacing: 6px;
 
-        Image {
-            source: root.icon;
+        Rectangle {
             width: 16px;
-            colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
-            animate colorize { duration: 120ms; }
+
+            Image {
+                source: root.icon;
+                width: touch.pressed && root.enabled ? 15px : 16px;
+                height: touch.pressed && root.enabled ? 15px : 16px;
+                colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
+                animate width, height { duration: 100ms; easing: ease-out; }
+                animate colorize { duration: 120ms; }
+            }
         }
 
         if root.text != "": Text {
@@ -488,13 +495,18 @@ export component CommandButton {
             animate color { duration: 120ms; }
         }
 
-        if root.opens-menu: Image {
-            source: @image-url("icons/chevron-down.svg");
+        if root.opens-menu: Rectangle {
             width: 10px;
-            colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text-dim;
-            transform-rotation: root.active ? 180deg : 0deg;
-            animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
-            animate colorize { duration: 120ms; }
+
+            Image {
+                source: @image-url("icons/chevron-down.svg");
+                width: 10px;
+                height: 10px;
+                colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text-dim;
+                transform-rotation: root.active ? 180deg : 0deg;
+                animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                animate colorize { duration: 120ms; }
+            }
         }
     }
 

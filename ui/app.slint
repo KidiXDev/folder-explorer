@@ -17,15 +17,20 @@ component TitleBar inherits Rectangle {
     callback close-requested();
 
     height: Theme.titlebar-height;
-    background: Theme.header;
+    background: transparent;
 
     HorizontalLayout {
         padding-left: 12px;
         spacing: 8px;
 
-        Image {
-            source: root.icon;
+        Rectangle {
             width: 16px;
+
+            Image {
+                source: root.icon;
+                width: 16px;
+                height: 16px;
+            }
         }
 
         DimLabel {
@@ -79,9 +84,10 @@ component Breadcrumbs {
     Rectangle {
         border-radius: Theme.radius;
         border-width: 1px;
-        border-color: edit-touch.has-hover ? Theme.line-strong : Theme.line;
+        border-color: edit-touch.has-hover ? Theme.input-border-hover : Theme.input-border;
         background: edit-touch.has-hover ? Theme.input-hover : Theme.input-bg;
         visible: !root.editing;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
     edit-touch := TouchArea {
@@ -105,10 +111,15 @@ component Breadcrumbs {
             spacing: 0;
 
             for crumb[index] in root.crumbs: HorizontalLayout {
-                if index > 0: Image {
-                    source: @image-url("icons/chevron-right.svg");
+                if index > 0: Rectangle {
                     width: 12px;
-                    colorize: Theme.text-faint;
+
+                    Image {
+                        source: @image-url("icons/chevron-right.svg");
+                        width: 12px;
+                        height: 12px;
+                        colorize: Theme.text-faint;
+                    }
                 }
 
                 Rectangle {
@@ -127,10 +138,15 @@ component Breadcrumbs {
                         padding-right: 6px;
                         spacing: 6px;
 
-                        if index == 0: Image {
-                            source: @image-url("icons/computer.svg");
+                        if index == 0: Rectangle {
                             width: 14px;
-                            colorize: root.crumbs.length == 1 ? Theme.accent : Theme.text-dim;
+
+                            Image {
+                                source: @image-url("icons/computer.svg");
+                                width: 14px;
+                                height: 14px;
+                                colorize: root.crumbs.length == 1 ? Theme.accent : Theme.text-dim;
+                            }
                         }
 
                         Label {
@@ -182,25 +198,28 @@ component SearchBox inherits Rectangle {
     callback cleared();
 
     height: 34px;
-    border-radius: 4px;
+    border-radius: Theme.radius;
     border-width: 1px;
     border-color: !root.enabled || input.has-focus
         ? Theme.line
-        : (Theme.dark
-            ? @linear-gradient(180deg, #ffffff14 99.98%, #ffffff8a 100%)
-            : @linear-gradient(180deg, #0000000f 99.99%, #00000073 100%));
+        : bg-touch.has-hover
+            ? Theme.input-border-hover
+            : Theme.input-border;
     background: !root.enabled
-        ? (Theme.dark ? #ffffff0a : #f9f9f94d)
+        ? (Theme.dark ? #ffffff06 : #f9f9f966)
         : input.has-focus
-            ? (Theme.dark ? #1e1e1eb3 : #ffffff)
-            : Palette.control-background;
+            ? Theme.input-active
+            : bg-touch.has-hover
+                ? Theme.input-hover
+                : Theme.input-bg;
+    animate background { duration: 120ms; easing: ease-out; }
     forward-focus: input;
     accessible-role: text-input;
     accessible-enabled: root.enabled;
     accessible-value <=> root.text;
     accessible-placeholder-text: root.placeholder-text;
 
-    TouchArea {
+    bg-touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: MouseCursor.text;
         clicked => { input.focus(); }
@@ -326,13 +345,16 @@ component SearchBox inherits Rectangle {
         }
     }
 
-    if input.has-focus: Rectangle {
-        x: parent.border-radius;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
         y: parent.height - self.height;
-        width: parent.width - 2 * parent.border-radius;
+        width: input.has-focus ? parent.width - 2 * parent.border-radius : 0px;
         height: 2px;
         border-radius: 1px;
         background: Theme.accent;
+        opacity: input.has-focus ? 1 : 0;
+        animate width { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 120ms; easing: ease-out; }
     }
 }
 
@@ -435,7 +457,7 @@ export component AppWindow inherits Window {
     resize-border-width: root.maximized ? 0px : 5px;
     min-width: 760px;
     min-height: 440px;
-    background: Theme.surface;
+    background: Theme.window-bg;
     default-font-family: "Segoe UI";
     default-font-size: Theme.text-size;
 
@@ -671,13 +693,13 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 height: Theme.toolbar-height;
-                background: Theme.header;
+                background: transparent;
 
                 HorizontalLayout {
                     padding-left: 10px;
                     padding-right: 10px;
-                    padding-top: 2px;
-                    padding-bottom: 8px;
+                    padding-top: 4px;
+                    padding-bottom: 6px;
                     spacing: 3px;
 
                     IconButton {
@@ -740,7 +762,7 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 height: Theme.commandbar-height;
-                background: Theme.panel;
+                background: Theme.commandbar;
 
                 TouchArea {
                     enabled: header-popover.open;
@@ -754,8 +776,8 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px;
                     padding-right: 10px;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
+                    padding-top: 5px;
+                    padding-bottom: 5px;
                     spacing: 3px;
 
                     CommandButton {
@@ -969,6 +991,7 @@ export component AppWindow inherits Window {
 
                 Rectangle {
                     horizontal-stretch: 1;
+                    background: Theme.surface;
 
                     Rectangle {
                         horizontal-stretch: 1;
@@ -1240,7 +1263,7 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 height: Theme.statusbar-height;
-                background: Theme.header;
+                background: Theme.panel;
 
                 HorizontalLayout {
                     padding-left: 12px;
