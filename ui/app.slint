@@ -1,7 +1,7 @@
-import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
-import { CaptionButton, CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, UsageBar } from "controls.slint";
+import { CaptionButton, CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, MenuPopover, PopoverItem, SubmenuPopover, UsageBar } from "controls.slint";
 import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
 import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
@@ -170,6 +170,169 @@ component Breadcrumbs {
                 root.editing = false;
             }
         }
+    }
+}
+
+component SearchBox inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <string> placeholder-text;
+    in-out property <string> text <=> input.text;
+    callback edited();
+    callback accepted();
+    callback cleared();
+
+    height: 34px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: !root.enabled || input.has-focus
+        ? Theme.line
+        : (Theme.dark
+            ? @linear-gradient(180deg, #ffffff14 99.98%, #ffffff8a 100%)
+            : @linear-gradient(180deg, #0000000f 99.99%, #00000073 100%));
+    background: !root.enabled
+        ? (Theme.dark ? #ffffff0a : #f9f9f94d)
+        : input.has-focus
+            ? (Theme.dark ? #1e1e1eb3 : #ffffff)
+            : Palette.control-background;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-value <=> root.text;
+    accessible-placeholder-text: root.placeholder-text;
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 4px;
+        spacing: 4px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            Text {
+                width: 100%;
+                height: 100%;
+                vertical-alignment: center;
+                text: root.text == "" && input.preedit-text == "" ? root.placeholder-text : "";
+                color: !root.enabled ? Theme.text-faint : Theme.text-dim;
+                accessible-role: none;
+            }
+
+            ContextMenuArea {
+                enabled: root.enabled;
+
+                Menu {
+                    MenuItem {
+                        title: @tr("Undo");
+                        activated => { input.undo(); }
+                    }
+                    MenuItem {
+                        title: @tr("Redo");
+                        activated => { input.redo(); }
+                    }
+                    MenuSeparator { }
+                    MenuItem {
+                        title: @tr("Cut");
+                        activated => { input.cut(); }
+                    }
+                    MenuItem {
+                        title: @tr("Copy");
+                        enabled: !root.text.is-empty;
+                        activated => { input.copy(); }
+                    }
+                    MenuItem {
+                        title: @tr("Paste");
+                        activated => { input.paste(); }
+                    }
+                    MenuItem {
+                        title: @tr("Select All");
+                        enabled: !root.text.is-empty;
+                        activated => { input.select-all(); }
+                    }
+                }
+
+                input := TextInput {
+                    property <length> computed-x;
+
+                    x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+                    width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                    height: 100%;
+                    enabled: root.enabled;
+                    vertical-alignment: center;
+                    single-line: true;
+                    color: root.enabled ? Theme.text : Theme.text-faint;
+                    selection-background-color: Palette.selection-background;
+                    selection-foreground-color: Palette.accent-foreground;
+                    accessible-role: none;
+
+                    cursor-position-changed(pos) => {
+                        if (pos.x + self.computed-x < 0px) {
+                            self.computed-x = -pos.x;
+                        } else if (pos.x + self.computed-x > parent.width - self.text-cursor-width) {
+                            self.computed-x = parent.width - pos.x - self.text-cursor-width;
+                        }
+                    }
+
+                    edited => { root.edited(); }
+                    accepted => { root.accepted(); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            root.text = "";
+                            root.cleared();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            width: 26px;
+
+            if root.text == "": Image {
+                width: 15px;
+                height: 15px;
+                source: @image-url("icons/search.svg");
+                colorize: root.enabled ? Theme.text-dim : Theme.text-faint;
+            }
+
+            if root.text != "": Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: clear-search.pressed ? Theme.pressed : clear-search.has-hover ? Theme.hover : transparent;
+
+                Image {
+                    width: 13px;
+                    height: 13px;
+                    source: @image-url("icons/stop.svg");
+                    colorize: clear-search.has-hover ? Theme.text : Theme.text-dim;
+                }
+
+                clear-search := TouchArea {
+                    clicked => {
+                        root.text = "";
+                        root.cleared();
+                    }
+                }
+            }
+        }
+    }
+
+    if input.has-focus: Rectangle {
+        x: parent.border-radius;
+        y: parent.height - self.height;
+        width: parent.width - 2 * parent.border-radius;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent;
     }
 }
 
@@ -361,6 +524,63 @@ export component AppWindow inherits Window {
     property <int> horizontal-step: root.details ? 0 : grid.horizontal-step;
     property <int> page-step: root.details ? 20 : grid.page-step;
     property <[string]> view-titles: ["Extra large icons", "Large icons", "Medium icons", "Small icons", "List", "Details", "Tiles"];
+    property <[image]> view-icons: [@image-url("icons/view-extra-large.svg"), @image-url("icons/view-large.svg"), @image-url("icons/view-medium.svg"), @image-url("icons/view-small.svg"), @image-url("icons/view-list.svg"), @image-url("icons/view-details.svg"), @image-url("icons/view-tiles.svg")];
+    property <int> header-menu;
+    property <length> menu-anchor-x;
+    property <length> menu-anchor-y;
+    property <[string]> unit-titles: ["Automatic", "Bytes", "Kilobytes", "Megabytes", "Gigabytes", "Terabytes"];
+    property <[string]> more-titles: ["Size unit", "Columns", "Show hidden items", "Export list…", root.recycle-bin-title];
+    property <[image]> more-icons: [@image-url("icons/drive.svg"), @image-url("icons/view-details.svg"), @image-url("icons/eye.svg"), @image-url("icons/export.svg"), @image-url("icons/delete.svg")];
+
+    function show-header-menu(menu: int, x: length, y: length) {
+        if (header-popover.open && root.header-menu == menu) {
+            header-popover.open = false;
+            return;
+        }
+        root.header-menu = menu;
+        header-popover.submenu-open = 0;
+        header-popover.submenu-index = -1;
+        header-popover.current-index = -1;
+        root.menu-anchor-x = x;
+        root.menu-anchor-y = y;
+        header-popover.open = true;
+    }
+
+    function activate-header-item(index: int) {
+        if (!header-popover.open) { return; }
+        if (root.header-menu == 1) {
+            root.sort-chosen(index);
+        } else if (root.header-menu == 2) {
+            root.view-chosen(index);
+        } else if (index < 2) {
+            header-popover.submenu-open = index + 1;
+            header-popover.submenu-index = 0;
+            return;
+        } else if (index == 2) {
+            root.show-hidden = !root.show-hidden;
+            root.hidden-toggled();
+        } else if (index == 3) {
+            if (root.showing-drives) { return; }
+            header-popover.open = false;
+            root.action("export");
+            return;
+        } else {
+            header-popover.open = false;
+            root.action("empty-bin");
+            return;
+        }
+        header-popover.open = false;
+    }
+
+    function activate-submenu-item(index: int) {
+        if (!header-popover.open) { return; }
+        if (header-popover.submenu-open == 1) {
+            root.unit-chosen(index);
+            header-popover.open = false;
+        } else if (header-popover.submenu-open == 2) {
+            root.column-toggled(index);
+        }
+    }
 
     public function reveal-row(row: int) {
         if (root.details) {
@@ -498,60 +718,16 @@ export component AppWindow inherits Window {
 
                     Rectangle { width: 6px; }
 
-                    Rectangle {
+                    search-box := SearchBox {
                         width: 260px;
-                        height: 34px;
-
-                        search-box := LineEdit {
-                            width: parent.width;
-                            height: parent.height;
-                            enabled: root.can-search;
-                            placeholder-text: "Search this folder";
-                            text <=> root.search-text;
-                            edited => { root.search-changed(); }
-                            accepted => { root.search-changed(); }
-                            key-pressed(event) => {
-                                if (event.text == Key.Escape) {
-                                    root.search-text = "";
-                                    root.search-changed();
-                                    root.focus-list();
-                                    return accept;
-                                }
-                                reject
-                            }
-                        }
-
-                        if root.search-text == "": Image {
-                            x: parent.width - 26px;
-                            y: (parent.height - self.height) / 2;
-                            width: 15px;
-                            height: 15px;
-                            source: @image-url("icons/search.svg");
-                            colorize: root.can-search ? Theme.text-dim : Theme.text-faint;
-                        }
-
-                        if root.search-text != "": Rectangle {
-                            x: parent.width - 30px;
-                            y: 4px;
-                            width: 26px;
-                            height: 26px;
-                            border-radius: Theme.radius-sm;
-                            background: clear-search.pressed ? Theme.pressed : clear-search.has-hover ? Theme.hover : transparent;
-
-                            Image {
-                                width: 13px;
-                                height: 13px;
-                                source: @image-url("icons/stop.svg");
-                                colorize: clear-search.has-hover ? Theme.text : Theme.text-dim;
-                            }
-
-                            clear-search := TouchArea {
-                                clicked => {
-                                    root.search-text = "";
-                                    root.search-changed();
-                                    root.focus-list();
-                                }
-                            }
+                        enabled: root.can-search;
+                        placeholder-text: "Search this folder";
+                        text <=> root.search-text;
+                        edited => { root.search-changed(); }
+                        accepted => { root.search-changed(); }
+                        cleared => {
+                            root.search-changed();
+                            root.focus-list();
                         }
                     }
                 }
@@ -566,163 +742,158 @@ export component AppWindow inherits Window {
                 height: Theme.commandbar-height;
                 background: Theme.panel;
 
-                layout-menu := ContextMenuArea {
-                    width: parent.width;
-                    height: parent.height;
-                    enabled: false;
+                TouchArea {
+                    enabled: header-popover.open;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            header-popover.open = false;
+                        }
+                    }
+                }
 
-                    Menu {
-                        for title[index] in root.view-titles: MenuItem {
-                            title: title;
-                            checkable: true;
-                            checked: index == root.view-index;
-                            activated => { root.view-chosen(index); }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 3px;
+
+                    CommandButton {
+                        icon: @image-url("icons/new-folder.svg");
+                        text: "New folder";
+                        enabled: root.can-edit-folder;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("new-folder");
                         }
                     }
 
-                    sort-menu := ContextMenuArea {
-                        width: parent.width;
-                        height: parent.height;
-                        enabled: false;
+                    Rectangle {
+                        width: 13px;
 
-                        Menu {
-                            for choice[index] in root.sort-choices: MenuItem {
-                                title: choice.title;
-                                checkable: true;
-                                checked: choice.shown;
-                                activated => { root.sort-chosen(index); }
-                            }
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            background: Theme.line;
                         }
+                    }
 
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            padding-top: 6px;
-                            padding-bottom: 6px;
-                            spacing: 3px;
+                    CommandButton {
+                        icon: @image-url("icons/cut.svg");
+                        label: "Cut";
+                        enabled: root.selected-count > 0;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("cut");
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/new-folder.svg");
-                                text: "New folder";
-                                enabled: root.can-edit-folder;
-                                clicked => { root.action("new-folder"); }
-                            }
+                    CommandButton {
+                        icon: @image-url("icons/copy.svg");
+                        label: "Copy";
+                        enabled: root.selected-count > 0;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("copy");
+                        }
+                    }
 
-                            Rectangle {
-                                width: 13px;
+                    CommandButton {
+                        icon: @image-url("icons/paste.svg");
+                        label: "Paste";
+                        enabled: root.can-edit-folder;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("paste");
+                        }
+                    }
 
-                                Rectangle {
-                                    width: 1px;
-                                    height: 18px;
-                                    background: Theme.line;
-                                }
-                            }
+                    CommandButton {
+                        icon: @image-url("icons/rename.svg");
+                        label: "Rename";
+                        enabled: root.single-selection;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("rename");
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/cut.svg");
-                                label: "Cut";
-                                enabled: root.selected-count > 0;
-                                clicked => { root.action("cut"); }
-                            }
+                    CommandButton {
+                        icon: @image-url("icons/delete.svg");
+                        label: "Move to Recycle Bin";
+                        enabled: root.selected-count > 0;
+                        clicked => {
+                            header-popover.open = false;
+                            root.action("delete");
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/copy.svg");
-                                label: "Copy";
-                                enabled: root.selected-count > 0;
-                                clicked => { root.action("copy"); }
-                            }
+                    Rectangle {
+                        width: 13px;
 
-                            CommandButton {
-                                icon: @image-url("icons/paste.svg");
-                                label: "Paste";
-                                enabled: root.can-edit-folder;
-                                clicked => { root.action("paste"); }
-                            }
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            background: Theme.line;
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/rename.svg");
-                                label: "Rename";
-                                enabled: root.single-selection;
-                                clicked => { root.action("rename"); }
-                            }
+                    CommandButton {
+                        icon: @image-url("icons/sort.svg");
+                        text: "Sort";
+                        opens-menu: true;
+                        active: header-popover.open && root.header-menu == 1;
+                        enabled: !root.showing-drives;
+                        clicked => {
+                            root.show-header-menu(1, self.absolute-position.x, self.absolute-position.y + self.height);
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/delete.svg");
-                                label: "Move to Recycle Bin";
-                                enabled: root.selected-count > 0;
-                                clicked => { root.action("delete"); }
-                            }
+                    CommandButton {
+                        icon: @image-url("icons/view.svg");
+                        text: "View";
+                        opens-menu: true;
+                        active: header-popover.open && root.header-menu == 2;
+                        clicked => {
+                            root.show-header-menu(2, self.absolute-position.x, self.absolute-position.y + self.height);
+                        }
+                    }
 
-                            Rectangle {
-                                width: 13px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
 
-                                Rectangle {
-                                    width: 1px;
-                                    height: 18px;
-                                    background: Theme.line;
-                                }
-                            }
+                    IconButton {
+                        height: 32px;
+                        icon: @image-url("icons/filter.svg");
+                        label: "Search filters";
+                        active: root.filters-open || root.size-enabled || root.date-enabled;
+                        enabled: root.can-search;
+                        clicked => {
+                            header-popover.open = false;
+                            root.filters-open = !root.filters-open;
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/sort.svg");
-                                text: "Sort";
-                                opens-menu: true;
-                                enabled: !root.showing-drives;
-                                clicked => {
-                                    sort-menu.show({
-                                        x: self.absolute-position.x - sort-menu.absolute-position.x,
-                                        y: self.absolute-position.y - sort-menu.absolute-position.y + self.height,
-                                    });
-                                }
-                            }
+                    IconButton {
+                        height: 32px;
+                        icon: @image-url("icons/summary.svg");
+                        label: "Summary pane";
+                        active: root.summary-open;
+                        clicked => {
+                            header-popover.open = false;
+                            root.summary-open = !root.summary-open;
+                            root.summary-toggled();
+                        }
+                    }
 
-                            CommandButton {
-                                icon: @image-url("icons/view.svg");
-                                text: "View";
-                                opens-menu: true;
-                                clicked => {
-                                    layout-menu.show({
-                                        x: self.absolute-position.x - layout-menu.absolute-position.x,
-                                        y: self.absolute-position.y - layout-menu.absolute-position.y + self.height,
-                                    });
-                                }
-                            }
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                            }
-
-                            IconButton {
-                                height: 32px;
-                                icon: @image-url("icons/filter.svg");
-                                label: "Search filters";
-                                active: root.filters-open || root.size-enabled || root.date-enabled;
-                                enabled: root.can-search;
-                                clicked => { root.filters-open = !root.filters-open; }
-                            }
-
-                            IconButton {
-                                height: 32px;
-                                icon: @image-url("icons/summary.svg");
-                                label: "Summary pane";
-                                active: root.summary-open;
-                                clicked => {
-                                    root.summary-open = !root.summary-open;
-                                    root.summary-toggled();
-                                }
-                            }
-
-                            IconButton {
-                                height: 32px;
-                                icon: @image-url("icons/more.svg");
-                                label: "More options";
-                                clicked => {
-                                    view-menu.show({
-                                        x: self.absolute-position.x - view-menu.absolute-position.x - 190px,
-                                        y: self.absolute-position.y - view-menu.absolute-position.y + self.height,
-                                    });
-                                }
-                            }
+                    IconButton {
+                        height: 32px;
+                        icon: @image-url("icons/more.svg");
+                        label: "More options";
+                        active: header-popover.open && root.header-menu == 3;
+                        clicked => {
+                            root.show-header-menu(3, self.absolute-position.x + self.width - 236px, self.absolute-position.y + self.height);
                         }
                     }
                 }
@@ -796,54 +967,8 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                view-menu := ContextMenuArea {
+                Rectangle {
                     horizontal-stretch: 1;
-                    enabled: false;
-
-                    Menu {
-                        Menu {
-                            title: "Size unit";
-                            for title[index] in ["Automatic", "Bytes", "Kilobytes", "Megabytes", "Gigabytes", "Terabytes"]: MenuItem {
-                                title: title;
-                                checkable: true;
-                                checked: index == root.unit-index;
-                                activated => { root.unit-chosen(index); }
-                            }
-                        }
-
-                        Menu {
-                            title: "Columns";
-                            for choice[index] in root.column-choices: MenuItem {
-                                title: choice.title;
-                                checkable: true;
-                                checked: choice.shown;
-                                activated => { root.column-toggled(index); }
-                            }
-                        }
-
-                        MenuItem {
-                            title: "Show hidden items";
-                            checkable: true;
-                            checked: root.show-hidden;
-                            activated => {
-                                root.show-hidden = !root.show-hidden;
-                                root.hidden-toggled();
-                            }
-                        }
-
-                        MenuSeparator { }
-
-                        MenuItem {
-                            title: "Export list…";
-                            enabled: !root.showing-drives;
-                            activated => { root.action("export"); }
-                        }
-
-                        MenuItem {
-                            title: root.recycle-bin-title;
-                            activated => { root.action("empty-bin"); }
-                        }
-                    }
 
                     Rectangle {
                         horizontal-stretch: 1;
@@ -1229,6 +1354,114 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    header-popover := MenuPopover {
+        width: root.width;
+        height: root.height;
+        anchor-x: root.menu-anchor-x;
+        anchor-y: root.menu-anchor-y;
+        item-count: root.header-menu == 1 ? root.sort-choices.length
+            : root.header-menu == 2 ? root.view-titles.length
+            : root.more-titles.length;
+        submenu-item-count: self.submenu-open == 1 ? root.unit-titles.length
+            : self.submenu-open == 2 ? root.column-choices.length
+            : 0;
+        activated(index) => { root.activate-header-item(index); }
+        submenu-activated(index) => { root.activate-submenu-item(index); }
+        open-submenu(index) => {
+            if (root.header-menu == 3 && index < 2) {
+                self.submenu-open = index + 1;
+                self.submenu-index = 0;
+            }
+        }
+        dismissed => { root.focus-list(); }
+
+        if root.header-menu == 1: VerticalLayout {
+            spacing: 1px;
+            for choice[index] in root.sort-choices: PopoverItem {
+                text: choice.title;
+                checked: choice.shown;
+                checkable: true;
+                radio: true;
+                highlighted: header-popover.current-index == index;
+                hovered => { header-popover.current-index = index; }
+                activated => { root.activate-header-item(index); }
+            }
+        }
+        if root.header-menu == 2: VerticalLayout {
+            spacing: 1px;
+            for title[index] in root.view-titles: PopoverItem {
+                text: title;
+                icon: root.view-icons[index];
+                checked: root.view-index == index;
+                checkable: true;
+                radio: true;
+                highlighted: header-popover.current-index == index;
+                hovered => { header-popover.current-index = index; }
+                activated => { root.activate-header-item(index); }
+            }
+        }
+        if root.header-menu == 3: VerticalLayout {
+            spacing: 1px;
+            for title[index] in root.more-titles: PopoverItem {
+                text: title;
+                icon: root.more-icons[index];
+                checked: index == 2 && root.show-hidden;
+                checkable: index == 2;
+                enabled: index != 3 || !root.showing-drives;
+                submenu: index < 2;
+                active-submenu: index < 2 && header-popover.submenu-open == index + 1;
+                separator-before: index == 3;
+                highlighted: header-popover.current-index == index;
+                hovered => {
+                    header-popover.current-index = index;
+                    header-popover.submenu-index = -1;
+                    header-popover.submenu-open = index < 2 ? index + 1 : 0;
+                }
+                activated => { root.activate-header-item(index); }
+            }
+        }
+    }
+
+    SubmenuPopover {
+        window-width: root.width;
+        window-height: root.height;
+        open: header-popover.open && root.header-menu == 3 && header-popover.submenu-open != 0;
+        parent-x: header-popover.panel-x;
+        parent-y: header-popover.panel-y;
+        parent-width: header-popover.panel-width;
+        offset-y: header-popover.displayed-submenu == 2 ? 35px : 0px;
+
+        if header-popover.displayed-submenu == 1: VerticalLayout {
+            spacing: 1px;
+            for title[index] in root.unit-titles: PopoverItem {
+                text: title;
+                checked: root.unit-index == index;
+                checkable: true;
+                radio: true;
+                highlighted: header-popover.submenu-index == index;
+                hovered => {
+                    header-popover.current-index = 0;
+                    header-popover.submenu-index = index;
+                }
+                activated => { root.activate-submenu-item(index); }
+            }
+        }
+        if header-popover.displayed-submenu == 2: VerticalLayout {
+            spacing: 1px;
+            for choice[index] in root.column-choices: PopoverItem {
+                text: choice.title;
+                checked: choice.shown;
+                checkable: true;
+                highlighted: header-popover.submenu-index == index;
+                hovered => {
+                    header-popover.current-index = 1;
+                    header-popover.submenu-index = index;
+                }
+                activated => { root.activate-submenu-item(index); }
             }
         }
     }

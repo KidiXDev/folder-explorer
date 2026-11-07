@@ -1,5 +1,356 @@
-import { LineEdit } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+
+export component PopoverItem inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> checked;
+    in property <bool> checkable;
+    in property <bool> radio;
+    in property <bool> enabled: true;
+    in property <bool> highlighted;
+    in property <bool> submenu;
+    in property <bool> active-submenu;
+    in property <bool> separator-before;
+    callback activated();
+    callback hovered();
+
+    private property <length> row-height: 34px;
+
+    height: root.separator-before ? root.row-height + 9px : root.row-height;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { if (root.enabled) { root.activated(); } }
+
+    if root.separator-before: Rectangle {
+        x: 8px;
+        y: 4px;
+        width: parent.width - 16px;
+        height: 1px;
+        background: Theme.line;
+    }
+
+    Rectangle {
+        y: root.separator-before ? 9px : 0px;
+        height: root.row-height;
+        border-radius: Theme.radius;
+        background: !root.enabled ? transparent
+            : touch.pressed ? Theme.pressed
+            : (touch.has-hover || root.highlighted || root.active-submenu) ? Theme.hover
+            : transparent;
+        animate background { duration: 110ms; easing: ease-out; }
+
+        if root.radio: Rectangle {
+            x: 15px - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: root.checked ? 6px : 0px;
+            height: root.checked ? 6px : 0px;
+            border-radius: self.width / 2;
+            background: Theme.accent;
+            opacity: root.checked ? 1 : 0;
+            animate width, height { duration: 150ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate opacity { duration: 120ms; easing: ease-out; }
+        }
+
+        if root.checkable && !root.radio: Image {
+            x: 15px - self.width / 2;
+            y: (parent.height - self.height) / 2;
+            width: root.checked ? 14px : 10px;
+            height: root.checked ? 14px : 10px;
+            source: @image-url("icons/check.svg");
+            colorize: Theme.accent;
+            opacity: root.checked ? 1 : 0;
+            accessible-role: none;
+            animate width, height { duration: 150ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate opacity { duration: 120ms; easing: ease-out; }
+        }
+
+        if root.icon.width > 0: Image {
+            x: 28px;
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            source: root.icon;
+            colorize: !root.enabled ? Theme.text-faint : root.checked ? Theme.accent : Theme.text;
+            accessible-role: none;
+            animate colorize { duration: 120ms; }
+        }
+
+        Text {
+            x: root.icon.width > 0 ? 52px : 30px;
+            width: parent.width - self.x - (root.submenu ? 28px : 12px);
+            height: parent.height;
+            text: root.text;
+            color: root.enabled ? Theme.text : Theme.text-faint;
+            font-size: Theme.text-size;
+            font-weight: root.checked ? 600 : 400;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.submenu: Image {
+            x: parent.width - 22px + (root.active-submenu ? 2px : 0px);
+            y: (parent.height - self.height) / 2;
+            width: 12px;
+            height: 12px;
+            source: @image-url("icons/chevron-right.svg");
+            colorize: root.active-submenu ? Theme.accent : Theme.text-dim;
+            animate x, colorize { duration: 140ms; easing: ease-out; }
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            clicked => { root.activated(); }
+            changed has-hover => {
+                if (self.has-hover && root.enabled) {
+                    root.hovered();
+                }
+            }
+        }
+    }
+}
+
+export component MenuPopover inherits Rectangle {
+    in-out property <bool> open;
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    in property <length> panel-width: 236px;
+    in property <length> commandbar-top: Theme.titlebar-height + Theme.toolbar-height + 1px;
+    in property <length> commandbar-bottom: Theme.titlebar-height + Theme.toolbar-height + Theme.commandbar-height + 1px;
+    in property <int> item-count;
+    in-out property <int> current-index: -1;
+    in-out property <int> submenu-open: 0;
+    out property <int> displayed-submenu: 1;
+    in property <int> submenu-item-count: 0;
+    in-out property <int> submenu-index: -1;
+    out property <length> panel-x: panel.x;
+    out property <length> panel-y: panel.y;
+    callback activated(int);
+    callback submenu-activated(int);
+    callback open-submenu(int);
+    callback dismissed();
+
+    private property <float> enter: root.open ? 1 : 0;
+    animate enter { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+    private property <float> fade: root.open ? 1 : 0;
+    animate fade { duration: 115ms; easing: ease-out; }
+    visible: root.open || root.fade > 0.01;
+
+    private property <length> full-height: min(items.preferred-height + 10px, root.height - root.anchor-y - 14px);
+    animate full-height { duration: 165ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+
+    changed submenu-open => {
+        if (root.submenu-open != 0) {
+            root.displayed-submenu = root.submenu-open;
+        }
+    }
+
+    changed open => {
+        if (root.open) {
+            root.current-index = -1;
+            root.submenu-open = 0;
+            root.submenu-index = -1;
+            scroll.content-y = 0px;
+            menu-focus.focus();
+        } else {
+            root.submenu-open = 0;
+            root.submenu-index = -1;
+            root.dismissed();
+        }
+    }
+
+    changed item-count => { root.current-index = -1; }
+
+    TouchArea {
+        y: 0;
+        height: root.commandbar-top;
+        enabled: root.open;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) { root.open = false; }
+        }
+    }
+
+    TouchArea {
+        y: root.commandbar-bottom;
+        height: max(0px, root.height - self.y);
+        enabled: root.open;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) { root.open = false; }
+        }
+    }
+
+    menu-focus := FocusScope {
+        x: panel.x;
+        y: panel.y;
+        width: panel.width;
+        height: panel.height;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                if (root.submenu-open != 0) {
+                    root.submenu-open = 0;
+                    root.submenu-index = -1;
+                } else {
+                    root.open = false;
+                }
+                return accept;
+            }
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                if (root.submenu-open != 0 && root.submenu-item-count > 0) {
+                    root.submenu-index = root.submenu-index < 0
+                        ? (event.text == Key.DownArrow ? 0 : root.submenu-item-count - 1)
+                        : mod(root.submenu-index + (event.text == Key.DownArrow ? 1 : root.submenu-item-count - 1), root.submenu-item-count);
+                } else if (root.item-count > 0) {
+                    root.current-index = root.current-index < 0
+                        ? (event.text == Key.DownArrow ? 0 : root.item-count - 1)
+                        : mod(root.current-index + (event.text == Key.DownArrow ? 1 : root.item-count - 1), root.item-count);
+                }
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                if (root.submenu-open != 0) { root.submenu-index = 0; }
+                else { root.current-index = 0; }
+                return accept;
+            }
+            if (event.text == Key.End) {
+                if (root.submenu-open != 0) { root.submenu-index = root.submenu-item-count - 1; }
+                else { root.current-index = root.item-count - 1; }
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.Backspace) {
+                if (root.submenu-open != 0) {
+                    root.submenu-open = 0;
+                    root.submenu-index = -1;
+                } else {
+                    root.open = false;
+                }
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                if (root.submenu-open == 0 && root.current-index >= 0) {
+                    root.open-submenu(root.current-index);
+                }
+                return accept;
+            }
+            if ((event.text == Key.Return || event.text == " ") && (root.current-index >= 0 || root.submenu-index >= 0)) {
+                if (root.submenu-open != 0 && root.submenu-index >= 0) {
+                    root.submenu-activated(root.submenu-index);
+                } else if (root.current-index >= 0) {
+                    root.activated(root.current-index);
+                }
+                return accept;
+            }
+            if (event.text == Key.Tab) { root.open = false; return accept; }
+            reject
+        }
+    }
+
+    panel := Rectangle {
+        x: clamp(root.anchor-x, 8px, root.width - self.width - 8px);
+        y: min(root.anchor-y + 5px, root.height - root.full-height - 8px)
+            + (root.open ? (1 - root.enter) * -8px : (1 - root.fade) * -4px);
+        width: root.panel-width;
+        height: root.full-height * (root.open ? (0.86 + 0.14 * root.enter) : (0.96 + 0.04 * root.fade));
+        opacity: root.open ? clamp(root.enter * 1.25, 0, 1) : root.fade;
+        clip: true;
+        background: Theme.dark ? #2b2b2b : #fcfcfc;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.line-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: Theme.dark ? #00000068 : #00000024;
+
+        TouchArea {
+            enabled: root.open;
+        }
+
+        scroll := ScrollView {
+            x: 5px;
+            y: 5px;
+            width: parent.width - 10px;
+            height: max(0px, root.full-height - 10px);
+            content-height: items.preferred-height;
+            content-width: self.visible-width;
+
+            items := VerticalLayout {
+                width: scroll.visible-width;
+                height: self.preferred-height;
+                spacing: 1px;
+                @children
+            }
+        }
+    }
+
+    changed current-index => {
+        if (root.current-index >= 0) {
+            scroll.content-y = clamp(scroll.content-y, 0 - root.current-index * 35px, min(0px, scroll.visible-height - (root.current-index + 1) * 35px));
+        }
+    }
+}
+
+export component SubmenuPopover inherits Rectangle {
+    in property <bool> open;
+    in property <length> window-width;
+    in property <length> window-height;
+    in property <length> parent-x;
+    in property <length> parent-y;
+    in property <length> parent-width;
+    in property <length> offset-y;
+    in property <length> panel-width: 204px;
+
+    private property <float> enter: root.open ? 1 : 0;
+    animate enter { duration: 170ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+    private property <float> fade: root.open ? 1 : 0;
+    animate fade { duration: 110ms; easing: ease-out; }
+    visible: root.open || root.fade > 0.01;
+
+    private property <bool> open-right: root.parent-x + root.parent-width + root.panel-width + 12px <= root.window-width;
+    private property <length> target-x: root.open-right
+        ? root.parent-x + root.parent-width + 4px
+        : max(8px, root.parent-x - root.panel-width - 4px);
+    private property <length> slide-x: (root.open-right ? -1 : 1) * (root.open ? (1 - root.enter) * 6px : (1 - root.fade) * 4px);
+    private property <length> full-height: min(items.preferred-height + 10px, root.window-height - root.parent-y - 14px);
+    animate full-height { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    private property <length> base-y: clamp(root.parent-y + root.offset-y, 8px, max(8px, root.window-height - root.full-height - 8px));
+    animate base-y { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+
+    x: root.target-x + root.slide-x;
+    y: root.base-y + (root.open ? (1 - root.enter) * -4px : 0px);
+    width: root.panel-width;
+    height: root.full-height * (root.open ? (0.88 + 0.12 * root.enter) : (0.96 + 0.04 * root.fade));
+    opacity: root.open ? clamp(root.enter * 1.25, 0, 1) : root.fade;
+    clip: true;
+    background: Theme.dark ? #2b2b2b : #fcfcfc;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.line-strong;
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: Theme.dark ? #00000068 : #00000024;
+
+    TouchArea {
+        enabled: root.open;
+    }
+
+    scroll := ScrollView {
+        x: 5px;
+        y: 5px;
+        width: parent.width - 10px;
+        height: max(0px, root.full-height - 10px);
+        content-height: items.preferred-height;
+        content-width: self.visible-width;
+
+        items := VerticalLayout {
+            width: scroll.visible-width;
+            height: self.preferred-height;
+            spacing: 1px;
+            @children
+        }
+    }
+}
 
 export component IconButton {
     in property <image> icon;
@@ -93,6 +444,7 @@ export component CommandButton {
     in property <string> text;
     in property <string> label: root.text;
     in property <bool> enabled: true;
+    in property <bool> active;
     in property <bool> opens-menu;
     callback clicked();
 
@@ -105,13 +457,14 @@ export component CommandButton {
 
     Rectangle {
         border-radius: Theme.radius;
-        border-width: root.enabled && (touch.has-hover || touch.pressed) ? 1px : 0px;
-        border-color: Theme.line;
+        border-width: root.enabled && (root.active || touch.has-hover || touch.pressed) ? 1px : 0px;
+        border-color: root.active ? Theme.selected-border : Theme.line;
         background: !root.enabled ? transparent
             : touch.pressed ? Theme.pressed
+            : root.active ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
             : touch.has-hover ? Theme.hover
             : transparent;
-        animate background { duration: 120ms; easing: ease-out; }
+        animate background, border-color { duration: 120ms; easing: ease-out; }
     }
 
     layout := HorizontalLayout {
@@ -122,7 +475,7 @@ export component CommandButton {
         Image {
             source: root.icon;
             width: 16px;
-            colorize: root.enabled ? Theme.text : Theme.text-faint;
+            colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
             animate colorize { duration: 120ms; }
         }
 
@@ -138,7 +491,10 @@ export component CommandButton {
         if root.opens-menu: Image {
             source: @image-url("icons/chevron-down.svg");
             width: 10px;
-            colorize: root.enabled ? Theme.text-dim : Theme.text-faint;
+            colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text-dim;
+            transform-rotation: root.active ? 180deg : 0deg;
+            animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate colorize { duration: 120ms; }
         }
     }
 
