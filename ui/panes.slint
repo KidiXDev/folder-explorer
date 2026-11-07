@@ -8,7 +8,12 @@ component TreeItem {
     callback opened();
     callback toggled();
 
+    property <bool> appeared: false;
+    init => { root.appeared = true; }
+
     height: Theme.row-height;
+    opacity: root.appeared ? 1 : 0;
+    animate opacity { duration: 150ms; easing: ease-out; }
 
     Rectangle {
         x: 6px;
@@ -19,17 +24,22 @@ component TreeItem {
         border-width: root.data.selected ? 1px : 0px;
         border-color: Theme.selected-border;
         background: root.data.selected ? (open.has-hover ? Theme.selected-hover : Theme.selected)
+            : open.pressed ? Theme.pressed
             : open.has-hover ? Theme.hover
             : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
-    if root.data.selected: Rectangle {
+    Rectangle {
         x: 6px;
         y: (parent.height - self.height) / 2;
         width: 3px;
-        height: 14px;
+        height: root.data.selected ? 15px : 0px;
         border-radius: 1.5px;
         background: Theme.accent;
+        opacity: root.data.selected ? 1 : 0;
+        animate height { duration: 170ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 140ms; easing: ease-out; }
     }
 
     open := TouchArea {
@@ -37,9 +47,10 @@ component TreeItem {
     }
 
     HorizontalLayout {
-        padding-left: 10px + root.data.depth * 14px;
+        padding-left: (root.appeared ? 10px : 4px) + root.data.depth * 14px;
         padding-right: 10px;
         spacing: 6px;
+        animate padding-left { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
 
         Rectangle {
             width: 18px;
@@ -48,13 +59,17 @@ component TreeItem {
                 width: 18px;
                 height: 18px;
                 border-radius: Theme.radius-sm;
-                background: toggle-touch.has-hover ? Theme.hover : transparent;
+                background: toggle-touch.pressed ? Theme.pressed : toggle-touch.has-hover ? Theme.hover : transparent;
+                animate background { duration: 110ms; easing: ease-out; }
 
                 Image {
-                    source: root.data.expanded ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                    source: @image-url("icons/chevron-right.svg");
                     width: 12px;
                     height: 12px;
                     colorize: toggle-touch.has-hover ? Theme.text : Theme.text-dim;
+                    transform-rotation: root.data.expanded ? 90deg : 0deg;
+                    animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                    animate colorize { duration: 120ms; }
                 }
             }
 
@@ -125,9 +140,11 @@ component DriveTile {
         border-width: 1px;
         border-color: touch.has-hover ? Theme.selected-border : Theme.card-border;
         background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.card-hover : Theme.card;
-        drop-shadow-blur: touch.has-hover ? 10px : 4px;
-        drop-shadow-color: Theme.dark ? #00000030 : #0000000c;
-        drop-shadow-offset-y: 2px;
+        drop-shadow-blur: touch.has-hover ? 12px : 4px;
+        drop-shadow-color: Theme.dark ? #00000038 : #00000010;
+        drop-shadow-offset-y: touch.has-hover ? 3px : 2px;
+        animate background, border-color { duration: 140ms; easing: ease-out; }
+        animate drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
     }
 
     touch := TouchArea {
@@ -293,6 +310,7 @@ component SummaryTab {
         border-width: root.active ? 1px : 0px;
         border-color: Theme.card-border;
         background: root.active ? Theme.card : touch.has-hover ? Theme.hover : transparent;
+        animate background { duration: 140ms; easing: ease-out; }
     }
 
     text := DimLabel {
@@ -300,6 +318,7 @@ component SummaryTab {
         font-weight: root.active ? 600 : 400;
         horizontal-alignment: center;
         color: root.active ? Theme.text : Theme.text-dim;
+        animate color { duration: 140ms; easing: ease-out; }
     }
 
     touch := TouchArea {
@@ -319,7 +338,10 @@ component SummaryItem {
         width: root.width - 12px;
         height: parent.height - 2px;
         border-radius: Theme.radius;
+        border-width: touch.has-hover ? 1px : 0px;
+        border-color: Theme.line;
         background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
     VerticalLayout {

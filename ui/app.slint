@@ -657,16 +657,20 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.filters-open: Rectangle {
-                height: 1px;
-                background: Theme.line;
-            }
-
-            if root.filters-open: Rectangle {
-                height: 44px;
+            Rectangle {
+                height: root.filters-open ? 45px : 0px;
                 background: Theme.subtle-surface;
+                clip: true;
+                animate height { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: Theme.line;
+                }
 
                 SearchFilters {
+                    y: 1px;
                     width: parent.width;
                     size-enabled <=> root.size-enabled;
                     size-rule <=> root.size-rule;

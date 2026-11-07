@@ -21,26 +21,34 @@ component GridCell {
         border-width: root.data.selected || (root.tile && touch.has-hover) ? 1px : 0px;
         border-color: root.data.selected ? Theme.selected-border : Theme.line;
         background: root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
+            : touch.pressed ? Theme.pressed
             : touch.has-hover ? Theme.hover
             : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
-    if root.data.selected && !root.stacked: Rectangle {
+    if !root.stacked: Rectangle {
         x: 3px;
         y: (parent.height - self.height) / 2;
         width: 3px;
-        height: 16px;
+        height: root.data.selected ? 16px : 0px;
         border-radius: 1.5px;
         background: Theme.accent;
+        opacity: root.data.selected ? 1 : 0;
+        animate height { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 130ms; easing: ease-out; }
     }
 
-    if root.data.selected && root.stacked: Rectangle {
+    if root.stacked: Rectangle {
         x: (parent.width - self.width) / 2;
         y: parent.height - 4px;
-        width: 20px;
+        width: root.data.selected ? 20px : 0px;
         height: 3px;
         border-radius: 1.5px;
         background: Theme.accent;
+        opacity: root.data.selected ? 1 : 0;
+        animate width { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 130ms; easing: ease-out; }
     }
 
     if root.stacked: VerticalLayout {

@@ -12,15 +12,19 @@ component HeaderCell {
 
     Rectangle {
         background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
-    if root.info.sort-direction != 0: Rectangle {
-        x: 8px;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
         y: parent.height - 2px;
-        width: parent.width - 16px;
+        width: root.info.sort-direction != 0 ? parent.width - 16px : 0px;
         height: 2px;
         border-radius: 1px;
         background: Theme.accent;
+        opacity: root.info.sort-direction != 0 ? 1 : 0;
+        animate width { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 140ms; easing: ease-out; }
     }
 
     touch := TouchArea {
@@ -38,12 +42,15 @@ component HeaderCell {
             font-weight: root.info.sort-direction != 0 ? 600 : 500;
             color: root.info.sort-direction != 0 || touch.has-hover ? Theme.text : Theme.text-dim;
             horizontal-stretch: 0;
+            animate color { duration: 120ms; }
         }
 
         if root.info.sort-direction != 0: Image {
-            source: root.info.sort-direction > 0 ? @image-url("icons/chevron-up.svg") : @image-url("icons/chevron-down.svg");
+            source: @image-url("icons/chevron-up.svg");
             width: 12px;
             colorize: Theme.accent;
+            transform-rotation: root.info.sort-direction > 0 ? 0deg : 180deg;
+            animate transform-rotation { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
         }
     }
 
@@ -53,6 +60,7 @@ component HeaderCell {
         width: resize-touch.has-hover || resize-touch.pressed ? 2px : 1px;
         height: parent.height - 12px;
         background: resize-touch.has-hover || resize-touch.pressed ? Theme.accent : Theme.line;
+        animate background, width { duration: 120ms; }
     }
 
     resize-touch := TouchArea {
@@ -87,17 +95,32 @@ component Row {
         border-width: root.data.selected ? 1px : 0px;
         border-color: Theme.selected-border;
         background: root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
+            : touch.pressed ? Theme.pressed
             : touch.has-hover ? Theme.hover
             : transparent;
+        animate background { duration: 110ms; easing: ease-out; }
     }
 
-    if root.data.selected: Rectangle {
+    Rectangle {
         x: 6px;
         y: (parent.height - self.height) / 2;
         width: 3px;
-        height: 14px;
+        height: root.data.selected ? 14px : 0px;
         border-radius: 1.5px;
         background: Theme.accent;
+        opacity: root.data.selected ? 1 : 0;
+        animate height { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 130ms; easing: ease-out; }
+    }
+
+    if root.data.ratio > 0: Rectangle {
+        x: root.columns[0].width + 6px;
+        y: 5px;
+        width: root.columns[1].width - 12px;
+        height: parent.height - 10px;
+        border-radius: Theme.radius-sm;
+        background: Theme.track;
+        opacity: 0.35;
     }
 
     if root.data.ratio > 0: Rectangle {
@@ -107,7 +130,9 @@ component Row {
         height: parent.height - 10px;
         border-radius: Theme.radius-sm;
         background: root.data.warn ? Theme.warning : Theme.accent;
-        opacity: root.data.selected || touch.has-hover ? 0.26 : 0.17;
+        opacity: root.data.selected || touch.has-hover ? 0.28 : 0.18;
+        animate width { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 120ms; }
     }
 
     FileIcon {

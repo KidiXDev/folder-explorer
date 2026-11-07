@@ -24,22 +24,28 @@ export component IconButton {
             : root.active ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
             : touch.has-hover ? Theme.hover
             : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
-    if root.active && root.enabled: Rectangle {
+    Rectangle {
         x: (parent.width - self.width) / 2;
         y: parent.height - 3px;
-        width: 14px;
+        width: root.active && root.enabled ? (touch.has-hover ? 16px : 12px) : 0px;
         height: 2.5px;
         border-radius: 1.25px;
         background: Theme.accent;
+        opacity: root.active && root.enabled ? 1 : 0;
+        animate width { duration: 160ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+        animate opacity { duration: 140ms; easing: ease-out; }
     }
 
     Image {
         source: root.icon;
-        width: 17px;
-        height: 17px;
+        width: touch.pressed && root.enabled ? 15px : 17px;
+        height: touch.pressed && root.enabled ? 15px : 17px;
         colorize: !root.enabled ? Theme.text-faint : root.active ? Theme.accent : Theme.text;
+        animate width, height { duration: 100ms; easing: ease-out; }
+        animate colorize { duration: 120ms; }
     }
 
     touch := TouchArea {
@@ -71,6 +77,7 @@ export component CommandButton {
             : touch.pressed ? Theme.pressed
             : touch.has-hover ? Theme.hover
             : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
     layout := HorizontalLayout {
@@ -82,6 +89,7 @@ export component CommandButton {
             source: root.icon;
             width: 16px;
             colorize: root.enabled ? Theme.text : Theme.text-faint;
+            animate colorize { duration: 120ms; }
         }
 
         if root.text != "": Text {
@@ -90,6 +98,7 @@ export component CommandButton {
             font-weight: 500;
             vertical-alignment: center;
             color: root.enabled ? Theme.text : Theme.text-faint;
+            animate color { duration: 120ms; }
         }
 
         if root.opens-menu: Image {
@@ -223,6 +232,8 @@ export component UsageBar {
             height: parent.height;
             border-radius: self.height / 2;
             background: root.nearly-full ? Theme.danger : Theme.accent;
+            animate width { duration: 220ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+            animate background { duration: 160ms; }
         }
     }
 }
