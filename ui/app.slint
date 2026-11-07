@@ -883,6 +883,26 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
+                        width: 13px;
+
+                        Rectangle {
+                            width: 1px;
+                            height: 18px;
+                            background: Theme.line;
+                        }
+                    }
+
+                    IconButton {
+                        height: 32px;
+                        icon: @image-url("icons/more.svg");
+                        label: "More options";
+                        active: header-popover.open && root.header-menu == 3;
+                        clicked => {
+                            root.show-header-menu(3, self.absolute-position.x, self.absolute-position.y + self.height);
+                        }
+                    }
+
+                    Rectangle {
                         horizontal-stretch: 1;
                     }
 
@@ -912,11 +932,11 @@ export component AppWindow inherits Window {
 
                     IconButton {
                         height: 32px;
-                        icon: @image-url("icons/more.svg");
-                        label: "More options";
-                        active: header-popover.open && root.header-menu == 3;
+                        icon: Theme.dark ? @image-url("icons/sun.svg") : @image-url("icons/moon.svg");
+                        label: Theme.dark ? "Switch to light theme" : "Switch to dark theme";
                         clicked => {
-                            root.show-header-menu(3, self.absolute-position.x + self.width - 236px, self.absolute-position.y + self.height);
+                            header-popover.open = false;
+                            Palette.color-scheme = Theme.dark ? ColorScheme.light : ColorScheme.dark;
                         }
                     }
                 }
@@ -1001,6 +1021,7 @@ export component AppWindow inherits Window {
                             width: parent.width;
                             height: parent.height;
                             drives: root.drives;
+                            network-drives: root.network-drives;
                             opened(path) => { root.open-location(path); }
                         }
 
@@ -1021,7 +1042,6 @@ export component AppWindow inherits Window {
                                     enabled: root.single-selection && root.in-search-results;
                                     activated => { root.action("open-location"); }
                                 }
-                            network-drives: root.network-drives;
 
                                 MenuItem {
                                     title: "Show in File Explorer";
