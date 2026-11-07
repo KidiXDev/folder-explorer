@@ -92,6 +92,7 @@ impl ListState {
         self.selected = vec![false; items.len()];
         self.cut = vec![false; items.len()];
         self.items = items;
+        self.order.clear();
         self.anchor = 0;
         self.cursor = 0;
         self.rebuild();
@@ -106,7 +107,16 @@ impl ListState {
         folders_first.then(by_column).then_with(|| Column::Name.compare(left, right)).then(a.cmp(&b))
     }
 
+    fn row_after_rebuild(&self, item: Option<u32>, old_row: usize) -> usize {
+        match item.map(|index| self.rows[index as usize]) {
+            Some(row) if row != NOT_SHOWN => row as usize,
+            _ => old_row.min(self.order.len().saturating_sub(1)),
+        }
+    }
+
     pub fn rebuild(&mut self) {
+        let anchored = self.order.get(self.anchor).copied();
+        let cursored = self.order.get(self.cursor).copied();
         let shows = |item: &Item| self.show_hidden || !item.is_hidden();
         let mut order: Vec<u32> =
             self.items.iter().enumerate().filter(|(_, item)| shows(item)).map(|(index, _)| index as u32).collect();
@@ -116,6 +126,8 @@ impl ListState {
             self.rows[*index as usize] = row as u32;
         }
         self.order = order;
+        self.anchor = self.row_after_rebuild(anchored, self.anchor);
+        self.cursor = self.row_after_rebuild(cursored, self.cursor);
         self.recount();
     }
 
@@ -459,6 +471,47 @@ mod tests {
         assert_eq!(list.selected_count(), 3);
         list.press(0, false, true);
         assert_eq!(list.selected_count(), 2);
+    }
+
+    #[test]
+    fn hiding_the_anchor_row_keeps_shift_selection_inside_the_list() {
+        let mut list = state(Column::Name, false, true);
+        list.press(4, false, false);
+        list.show_hidden = false;
+        list.rebuild();
+        list.press(0, false, true);
+        assert_eq!(list.selected_count(), 4);
+    }
+
+    #[test]
+    fn the_cursor_stays_usable_after_its_row_is_hidden() {
+        let mut list = state(Column::Name, false, true);
+        list.press(4, false, false);
+        list.show_hidden = false;
+        list.rebuild();
+        assert_eq!(list.move_cursor(-1, false), Some(2));
+    }
+
+    #[test]
+    fn the_anchor_follows_its_item_through_a_resort() {
+        let mut list = state(Column::Name, false, false);
+        list.press(1, false, false);
+        list.sort = Column::Size;
+        list.descending = true;
+        list.rebuild();
+        assert_eq!(names(&list), ["archive", "banana.txt", "Apple.txt", "zoo"]);
+        list.press(1, false, true);
+        let selected: Vec<_> = list.selected_items().map(|item| &*item.name).collect();
+        assert_eq!(selected, ["banana.txt", "Apple.txt", "zoo"]);
+    }
+
+    #[test]
+    fn replacing_the_items_resets_the_anchor() {
+        let mut list = state(Column::Name, false, false);
+        list.press(3, false, false);
+        list.set_items(vec![item("only.txt", false, 1, 0)]);
+        list.press(0, false, true);
+        assert_eq!(list.selected_count(), 1);
     }
 
     #[test]
