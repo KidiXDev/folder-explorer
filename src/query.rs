@@ -52,6 +52,7 @@ pub struct Query {
     pub extension: Option<String>,
     pub size: Option<Range<u64>>,
     pub date: Option<(DateField, Range<u64>)>,
+    pub direct_files: bool,
 }
 
 impl Query {
@@ -60,11 +61,11 @@ impl Query {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.extension.is_none() && self.size.is_none() && self.date.is_none()
+        self.text.is_empty() && !self.files_only()
     }
 
     fn files_only(&self) -> bool {
-        self.extension.is_some() || self.size.is_some() || self.date.is_some()
+        self.extension.is_some() || self.size.is_some() || self.date.is_some() || self.direct_files
     }
 
     fn matches_name(&self, name: &str) -> bool {
@@ -103,6 +104,9 @@ pub fn search(node: &DirNode, path: &Path, query: &Query) -> Vec<Item> {
         .filter(|(name, entry)| query.matches_file(&name.to_string_lossy(), entry))
         .map(|(name, entry)| Item::file(name, entry, &parent))
         .collect();
+    if query.direct_files {
+        return hits;
+    }
     if !query.files_only() {
         hits.extend(
             node.children
@@ -246,7 +250,7 @@ pub fn summarize(node: &DirNode, kind: SummaryKind) -> Vec<SummaryEntry> {
                         label: "[Folder files]".into(),
                         files,
                         size,
-                        filter: Query::default(),
+                        filter: Query { direct_files: true, ..Query::default() },
                         folder: None,
                     });
                 }
@@ -441,6 +445,20 @@ mod tests {
                 assert_eq!(hits.len() as u64, row.files, "{}", row.label);
             }
         }
+    }
+
+    #[test]
+    fn the_folder_files_row_finds_only_the_files_directly_inside() {
+        let tree = sample();
+        let junction = tree.0.join("link");
+        let made = Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&junction).arg(tree.0.join("photos")).output().unwrap();
+        assert!(made.status.success());
+        let node = scan(&tree.0);
+        let summary = summarize(&node, SummaryKind::Folders);
+        let row = summary.iter().find(|row| row.label == "[Folder files]").unwrap();
+        assert!(!row.filter.is_empty());
+        assert_eq!(names(search(&node, &tree.0, &row.filter)), ["Makefile", "Readme.TXT", "notes.txt"]);
+        assert_eq!(row.files, 3);
     }
 
     #[test]
