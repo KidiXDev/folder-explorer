@@ -522,9 +522,7 @@ impl App {
 
     fn cancel_scan(&mut self) {
         self.cancel.store(true, Relaxed);
-        self.hash_cancel.store(true, Relaxed);
-        self.hash_run += 1;
-        self.hashes_left = 0;
+        self.cancel_hashing();
         self.sync_busy();
     }
 
@@ -693,7 +691,8 @@ impl App {
         ui.set_in_search_results(true);
         ui.set_can_edit_folder(false);
         ui.set_list_message("Nothing matches this search.".into());
-        ui.set_status_activity(format!("{found} in {:.0} ms", seconds * 1000.0).into());
+        self.activity = format!("{found} in {:.0} ms", seconds * 1000.0);
+        ui.set_status_activity(self.activity.as_str().into());
         ui.invoke_scroll_to_top();
         self.restore_cut_marks();
         self.show_selection();
@@ -785,36 +784,49 @@ impl App {
 
     // Checksums
 
+    fn cancel_hashing(&mut self) {
+        self.hash_cancel.store(true, Relaxed);
+        self.hash_run += 1;
+        if std::mem::take(&mut self.hashes_left) > 0 {
+            self.on_hashing_ended();
+        }
+    }
+
+    fn on_hashing_ended(&self) {
+        if self.list.state().sort.hash_slot().is_some() {
+            self.list.update(ListState::rebuild);
+        }
+        if !self.scanning {
+            self.ui().set_status_activity(self.activity.as_str().into());
+        }
+    }
+
     fn start_hashing(&mut self) {
+        self.cancel_hashing();
+        self.hash_cancel = Arc::default();
         let mut wanted = [false; 4];
         let targets: Vec<(usize, PathBuf)> = {
             let state = self.list.state();
             for slot in state.columns.iter().filter_map(|column| column.hash_slot()) {
                 wanted[slot] = true;
             }
-            if !wanted.contains(&true) {
-                return;
-            }
             let missing = |item: &Item| {
-                !item.is_dir
+                wanted.contains(&true)
+                    && !item.is_dir
                     && item.hashes.as_ref().is_none_or(|hashes| (0..4).any(|slot| wanted[slot] && hashes[slot].is_empty()))
             };
             state.items.iter().enumerate().filter(|(_, item)| missing(item)).map(|(index, item)| (index, item.path())).collect()
         };
-        self.hash_cancel.store(true, Relaxed);
-        self.hash_cancel = Arc::default();
-        self.hash_run += 1;
         self.hashes_left = targets.len();
-        if targets.is_empty() {
-            return;
-        }
-        let (run, cancel) = (self.hash_run, self.hash_cancel.clone());
-        self.spawn(move |sender| {
-            targets.par_iter().for_each(|(index, path)| {
-                let hashes = hash_file(path, wanted, &cancel).ok();
-                let _ = sender.send(Message::Hashed { run, index: *index, hashes });
+        if !targets.is_empty() {
+            let (run, cancel) = (self.hash_run, self.hash_cancel.clone());
+            self.spawn(move |sender| {
+                targets.par_iter().for_each(|(index, path)| {
+                    let hashes = hash_file(path, wanted, &cancel).ok();
+                    let _ = sender.send(Message::Hashed { run, index: *index, hashes });
+                });
             });
-        });
+        }
         self.sync_busy();
     }
 
@@ -831,11 +843,10 @@ impl App {
                 None => merged.iter_mut().filter(|hash| hash.is_empty()).for_each(|hash| *hash = "Unreadable".into()),
             }
         });
-        if !self.scanning {
-            let activity = match self.hashes_left {
-                0 => self.activity.clone(),
-                left => format!("Calculating checksums · {} left", plural(left as u64, "file")),
-            };
+        if self.hashes_left == 0 {
+            self.on_hashing_ended();
+        } else if !self.scanning {
+            let activity = format!("Calculating checksums · {} left", plural(self.hashes_left as u64, "file"));
             self.ui().set_status_activity(activity.into());
         }
         self.sync_busy();
@@ -1597,7 +1608,85 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
 mod tests {
     use super::*;
     use crate::item::HASH_NAMES;
+    use crate::scan::tests::{TempTree, scan};
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+    use slint::platform::{Platform, WindowAdapter, set_platform};
     use std::os::windows::ffi::OsStringExt;
+
+    struct Headless;
+
+    impl Platform for Headless {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        }
+    }
+
+    fn headless_app() -> (AppWindow, Shared) {
+        let _ = set_platform(Box::new(Headless));
+        let ui = AppWindow::new().unwrap();
+        let shared: Shared =
+            Rc::new_cyclic(|me| RefCell::new(App::new(&ui, me.clone(), Settings::default(), IconStore::new())));
+        (ui, shared)
+    }
+
+    fn items_in(tree: &TempTree) -> Vec<Item> {
+        let parent: Arc<Path> = tree.0.as_path().into();
+        scan(&tree.0).files().map(|(name, entry)| Item::file(name, entry, &parent)).collect()
+    }
+
+    fn choice_of(column: Column) -> usize {
+        Column::ALL.iter().filter(|known| !known.is_fixed()).position(|known| *known == column).unwrap()
+    }
+
+    fn md5(text: &str) -> Option<[String; 4]> {
+        Some([text.into(), String::new(), String::new(), String::new()])
+    }
+
+    #[test]
+    fn hiding_the_last_checksum_column_abandons_the_run() {
+        let tree = TempTree::new();
+        tree.file("a.txt", 1);
+        let (_ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.list.set_items(items_in(&tree));
+        app.toggle_column(choice_of(Column::Md5));
+        let stale = app.hash_run;
+        assert_eq!(app.hashes_left, 1);
+        app.toggle_column(choice_of(Column::Md5));
+        assert_eq!(app.hashes_left, 0);
+        app.handle(Message::Hashed { run: stale, index: 0, hashes: md5("old") });
+        assert!(app.list.state().items[0].hashes.is_none());
+    }
+
+    #[test]
+    fn cancelling_checksums_restores_the_status_text() {
+        let (ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.activity = "Scanned 3 files".into();
+        ui.set_status_activity("Calculating checksums · 2 files left".into());
+        app.hashes_left = 2;
+        app.cancel_hashing();
+        assert_eq!(ui.get_status_activity(), "Scanned 3 files");
+    }
+
+    #[test]
+    fn a_checksum_sort_settles_when_the_last_hash_arrives() {
+        let tree = TempTree::new();
+        tree.file("a.txt", 1).file("b.txt", 1);
+        let (_ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.list.set_items(items_in(&tree));
+        app.list.update(|state| {
+            state.sort = Column::Md5;
+            state.rebuild();
+        });
+        let run = app.hash_run;
+        app.hashes_left = 2;
+        app.handle(Message::Hashed { run, index: 0, hashes: md5("ff") });
+        app.handle(Message::Hashed { run, index: 1, hashes: md5("00") });
+        let names: Vec<String> = app.list.state().visible_items().map(|item| item.name.to_string()).collect();
+        assert_eq!(names, ["b.txt", "a.txt"]);
+    }
 
     #[test]
     fn breadcrumb_text_maps_back_to_the_exact_folder() {
