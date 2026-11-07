@@ -41,22 +41,8 @@ component Breadcrumbs {
     }
 
     Rectangle {
-        x: 10px;
-        width: 16px;
-        height: parent.height;
-        visible: !root.editing;
-
-        Image {
-            width: 15px;
-            height: 15px;
-            source: root.crumbs.length <= 1 ? @image-url("icons/computer.svg") : @image-url("icons/folder.svg");
-            colorize: root.crumbs.length <= 1 ? Theme.text-dim : Theme.folder;
-        }
-    }
-
-    Rectangle {
-        x: 30px;
-        width: parent.width - 36px;
+        x: 6px;
+        width: parent.width - 12px;
         height: parent.height;
         clip: true;
         visible: !root.editing;
@@ -65,7 +51,7 @@ component Breadcrumbs {
             x: min(0px, parent.width - self.preferred-width);
             width: self.preferred-width;
             padding-left: 2px;
-            padding-right: 6px;
+            padding-right: 4px;
             spacing: 0;
 
             for crumb[index] in root.crumbs: HorizontalLayout {
@@ -76,7 +62,7 @@ component Breadcrumbs {
                 }
 
                 Rectangle {
-                    min-width: name.preferred-width + 12px;
+                    min-width: crumb-layout.preferred-width + 12px;
                     horizontal-stretch: 0;
 
                     Rectangle {
@@ -86,12 +72,24 @@ component Breadcrumbs {
                         background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
                     }
 
-                    name := Label {
-                        text: crumb.name;
-                        font-weight: index == root.crumbs.length - 1 ? 600 : 400;
-                        color: index == root.crumbs.length - 1 || touch.has-hover ? Theme.text : Theme.text-dim;
-                        overflow: clip;
-                        horizontal-alignment: center;
+                    crumb-layout := HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 6px;
+
+                        if index == 0: Image {
+                            source: @image-url("icons/computer.svg");
+                            width: 14px;
+                            colorize: root.crumbs.length == 1 ? Theme.accent : Theme.text-dim;
+                        }
+
+                        Label {
+                            text: crumb.name;
+                            font-weight: index == root.crumbs.length - 1 ? 600 : 400;
+                            color: index == root.crumbs.length - 1 || touch.has-hover ? Theme.text : Theme.text-dim;
+                            overflow: clip;
+                            horizontal-alignment: center;
+                        }
                     }
 
                     touch := TouchArea {
