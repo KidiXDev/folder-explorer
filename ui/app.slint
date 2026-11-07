@@ -906,9 +906,53 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            table := FileTable {
+                            property <length> banner-height: !root.showing-drives && root.in-search-results ? 36px : 0px;
+                            animate banner-height { duration: 180ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+
+                            if !root.showing-drives && banner-height > 0px: Rectangle {
+                                y: 0;
                                 width: parent.width;
-                                height: parent.height;
+                                height: banner-height;
+                                background: Theme.selected;
+                                clip: true;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+
+                                    Image {
+                                        source: @image-url("icons/search.svg");
+                                        width: 14px;
+                                        colorize: Theme.accent;
+                                    }
+
+                                    Label {
+                                        text: root.search-text != ""
+                                            ? "Search results for \"" + root.search-text + "\" in " + root.current-path
+                                            : "Filtered items in " + root.current-path;
+                                        font-weight: 500;
+                                        horizontal-stretch: 1;
+                                    }
+
+                                    CommandButton {
+                                        icon: @image-url("icons/stop.svg");
+                                        text: "Back to folder";
+                                        clicked => { root.go-back(); }
+                                    }
+                                }
+
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px;
+                                    background: Theme.selected-border;
+                                }
+                            }
+
+                            table := FileTable {
+                                y: banner-height;
+                                width: parent.width;
+                                height: parent.height - banner-height;
                                 visible: !root.showing-drives && root.details;
                                 columns: root.columns;
                                 rows: root.details ? root.rows : [];
@@ -933,8 +977,9 @@ export component AppWindow inherits Window {
                             }
 
                             grid := FileGrid {
+                                y: banner-height;
                                 width: parent.width;
-                                height: parent.height;
+                                height: parent.height - banner-height;
                                 visible: !root.showing-drives && !root.details;
                                 view: root.view-index;
                                 rows: root.details ? [] : root.rows;
