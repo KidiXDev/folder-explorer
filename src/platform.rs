@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::mem::{size_of, transmute, zeroed};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -6,6 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{copy_nonoverlapping, null, null_mut};
+use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -19,7 +21,7 @@ use windows::Win32::UI::Shell::{
     SIGDN_NORMALDISPLAY,
 };
 use windows::core::{HSTRING, Interface};
-use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HWND, MAX_PATH, SYSTEMTIME};
+use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HWND, LPARAM, LRESULT, MAX_PATH, SYSTEMTIME, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
@@ -47,10 +49,14 @@ use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO, MessageBoxW, SW_SHOWNORMAL,
+    CallWindowProcW, GWLP_WNDPROC, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO, MessageBoxW,
+    SW_SHOWNORMAL, SetWindowLongPtrW, WM_APPCOMMAND, WM_XBUTTONDOWN, WNDPROC, XBUTTON1, XBUTTON2,
 };
 
 pub const QUICK_ACCESS: &str = "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
+
+const APPCOMMAND_BROWSER_BACKWARD: u32 = 1;
+const APPCOMMAND_BROWSER_FORWARD: u32 = 2;
 
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
 const DRIVE_REMOVABLE: u32 = 2;
@@ -125,13 +131,53 @@ pub fn allow_dark_menus() {
     }
 }
 
-pub fn restore_frame_appearance(window: &slint::Window) {
+static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+
+thread_local! {
+    static NAVIGATE_HANDLER: RefCell<Option<Box<dyn Fn(bool)>>> = RefCell::new(None);
+}
+
+unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_XBUTTONDOWN {
+        let button = ((wparam >> 16) & 0xffff) as u16;
+        if button == XBUTTON1 || button == XBUTTON2 {
+            NAVIGATE_HANDLER.with(|slot| {
+                if let Some(handler) = slot.borrow().as_ref() {
+                    handler(button == XBUTTON2);
+                }
+            });
+            return 1;
+        }
+    } else if msg == WM_APPCOMMAND {
+        let cmd = ((lparam >> 16) & 0x0fff) as u32;
+        if cmd == APPCOMMAND_BROWSER_BACKWARD || cmd == APPCOMMAND_BROWSER_FORWARD {
+            NAVIGATE_HANDLER.with(|slot| {
+                if let Some(handler) = slot.borrow().as_ref() {
+                    handler(cmd == APPCOMMAND_BROWSER_FORWARD);
+                }
+            });
+            return 1;
+        }
+    }
+    let original = ORIGINAL_WNDPROC.load(Relaxed);
+    if original != 0 {
+        let proc: WNDPROC = unsafe { transmute(original) };
+        unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) }
+    } else {
+        0
+    }
+}
+
+pub fn restore_frame_appearance(window: &slint::Window, on_navigate: impl Fn(bool) + 'static) {
     let window = window.window_handle();
     let Ok(handle) = window.window_handle() else { return };
     let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
     let hwnd = handle.hwnd.get() as HWND;
     let frame = MARGINS { cxLeftWidth: 1, cxRightWidth: 1, cyTopHeight: 1, cyBottomHeight: 1 };
     let corners = DWMWCP_ROUND;
+    NAVIGATE_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(on_navigate));
+    });
     unsafe {
         DwmExtendFrameIntoClientArea(hwnd, &frame);
         DwmSetWindowAttribute(
@@ -140,6 +186,12 @@ pub fn restore_frame_appearance(window: &slint::Window) {
             (&raw const corners).cast(),
             size_of_val(&corners) as u32,
         );
+        if ORIGINAL_WNDPROC.load(Relaxed) == 0 {
+            let previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, window_proc as *const () as isize);
+            if previous != 0 {
+                ORIGINAL_WNDPROC.store(previous, Relaxed);
+            }
+        }
     }
 }
 

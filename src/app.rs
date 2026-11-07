@@ -1522,7 +1522,21 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
         }
         app.show_location();
     }
-    let _ = ui.as_weak().upgrade_in_event_loop(|ui| platform::restore_frame_appearance(ui.window()));
+    let _ = ui.as_weak().upgrade_in_event_loop(|ui| {
+        let nav_ui = ui.as_weak();
+        platform::restore_frame_appearance(ui.window(), move |forward| {
+            let nav_ui = nav_ui.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = nav_ui.upgrade() {
+                    if forward {
+                        ui.invoke_go_forward();
+                    } else {
+                        ui.invoke_go_back();
+                    }
+                }
+            });
+        });
+    });
     slint::run_event_loop()?;
     ui.hide()
 }
