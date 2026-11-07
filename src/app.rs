@@ -523,6 +523,7 @@ impl App {
     fn stop_work(&mut self) {
         self.cancel_scan();
         self.search_id += 1;
+        self.summary_id += 1;
         self.search_timer.stop();
         self.scanning = false;
         self.scan_id += 1;
@@ -664,6 +665,7 @@ impl App {
             self.show_location();
         } else {
             self.active_query = None;
+            self.search_id += 1;
         }
     }
 
@@ -1647,8 +1649,36 @@ mod tests {
         Column::ALL.iter().filter(|known| !known.is_fixed()).position(|known| *known == column).unwrap()
     }
 
+    fn summary_row() -> SummaryEntry {
+        SummaryEntry { label: "old".into(), files: 1, size: 1, filter: Query::default(), folder: None }
+    }
+
     fn md5(text: &str) -> Option<[String; 4]> {
         Some([text.into(), String::new(), String::new(), String::new()])
+    }
+
+    #[test]
+    fn a_summary_requested_before_navigating_is_dropped() {
+        let (_ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        let stale = app.summary_id;
+        app.show_location();
+        app.handle(Message::Summary { id: stale, entries: vec![summary_row()] });
+        assert!(app.summary.is_empty());
+        let current = app.summary_id;
+        app.handle(Message::Summary { id: current, entries: vec![summary_row()] });
+        assert_eq!(app.summary.len(), 1);
+    }
+
+    #[test]
+    fn clearing_the_search_drops_results_still_on_their_way() {
+        let (_ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.active_query = Some(Query::new("report"));
+        let stale = app.search_id;
+        app.apply_search();
+        app.handle(Message::Found { search: stale, items: Vec::new(), seconds: 0.0 });
+        assert!(!app.showing_results);
     }
 
     #[test]
