@@ -15,7 +15,7 @@ raw-window-handle = "0.6"
 rayon = "1.12"
 sha1 = "0.10"
 sha2 = "0.10"
-slint = { version = "1.18", features = ["raw-window-handle-06"] }
+slint = { version = "1.18", features = ["raw-window-handle-06", "renderer-skia"] }
 windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Storage_EnhancedStorage",
