@@ -1,12 +1,12 @@
 import { CheckBox, ComboBox, LineEdit, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
+import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreemapTile, TreeRow } from "types.slint";
 import { CaptionButton, CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, MenuPopover, PopoverItem, SubmenuPopover, UsageBar } from "controls.slint";
 import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
 import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
 
-export { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow }
+export { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreemapTile, TreeRow }
 
 component TitleBar inherits Rectangle {
     in property <image> icon;
@@ -470,7 +470,12 @@ export component AppWindow inherits Window {
     in property <[DriveCard]> drives;
     in property <[DriveCard]> network-drives;
     in property <[SummaryRow]> summary-rows;
+    in property <[TreemapTile]> summary-treemap;
+    in property <image> summary-chart-image;
+    in property <string> summary-total-size;
     in property <int> summary-kind;
+    in-out property <int> summary-viz-mode: 0;
+    in-out property <int> summary-hovered-index: -1;
     in property <string> summary-hint;
     in property <[ColumnChoice]> column-choices;
     in property <[string]> errors;
@@ -527,6 +532,9 @@ export component AppWindow inherits Window {
     callback cursor-moved(int, bool);
     callback search-changed();
     callback summary-kind-chosen(int);
+    callback summary-viz-mode-chosen(int);
+    callback summary-wheel-hovered(float, float);
+    callback summary-row-hovered(int);
     callback summary-activated(int);
     callback unit-chosen(int);
     callback column-toggled(int);
@@ -541,7 +549,7 @@ export component AppWindow inherits Window {
     callback rename-cancelled();
 
     property <bool> errors-open;
-    property <length> summary-width: 300px;
+    property <length> summary-width: 344px;
     property <bool> details: root.view-index == 5;
     property <int> vertical-step: root.details ? 1 : grid.vertical-step;
     property <int> horizontal-step: root.details ? 0 : grid.horizontal-step;
@@ -1256,7 +1264,7 @@ export component AppWindow inherits Window {
                         mouse-cursor: col-resize;
                         moved => {
                             if (self.pressed) {
-                                root.summary-width = clamp(root.summary-width - self.mouse-x + self.pressed-x, 220px, 520px);
+                                root.summary-width = clamp(root.summary-width - self.mouse-x + self.pressed-x, 260px, 560px);
                             }
                         }
                     }
@@ -1270,9 +1278,17 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                         rows: root.summary-rows;
+                        treemap-tiles: root.summary-treemap;
+                        chart-image: root.summary-chart-image;
+                        total-size: root.summary-total-size;
                         kind: root.summary-kind;
+                        viz-mode <=> root.summary-viz-mode;
+                        hovered-index <=> root.summary-hovered-index;
                         hint: root.summary-hint;
                         kind-chosen(index) => { root.summary-kind-chosen(index); }
+                        viz-mode-chosen(mode) => { root.summary-viz-mode-chosen(mode); }
+                        wheel-hovered(nx, ny) => { root.summary-wheel-hovered(nx, ny); }
+                        row-hovered(index) => { root.summary-row-hovered(index); }
                         activated(index) => { root.summary-activated(index); }
                     }
                 }

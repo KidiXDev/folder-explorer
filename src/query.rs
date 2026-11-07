@@ -128,6 +128,7 @@ pub fn search(node: &DirNode, path: &str, query: &Query) -> Vec<Item> {
 pub enum SummaryKind {
     #[default]
     Extension,
+    Folders,
     Age(DateField),
 }
 
@@ -137,6 +138,7 @@ pub struct SummaryEntry {
     pub files: u64,
     pub size: u64,
     pub filter: Query,
+    pub folder: Option<String>,
 }
 
 impl SummaryEntry {
@@ -212,8 +214,47 @@ pub fn summarize(node: &DirNode, kind: SummaryKind) -> Vec<SummaryEntry> {
                     files,
                     size,
                     filter: Query { extension: Some(extension), ..Query::default() },
+                    folder: None,
                 })
                 .collect();
+            entries.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.label.cmp(&b.label)));
+            entries
+        }
+        SummaryKind::Folders => {
+            let mut entries: Vec<_> = node
+                .children
+                .iter()
+                .filter(|child| child.size > 0 || child.file_count > 0)
+                .map(|child| SummaryEntry {
+                    label: child.name.to_string(),
+                    files: child.file_count,
+                    size: child.size,
+                    filter: Query::new(&child.name),
+                    folder: Some(child.name.to_string()),
+                })
+                .collect();
+            let direct_files: Vec<_> = node.files().filter(|(_, entry)| !entry.is_folder_link()).collect();
+            if entries.is_empty() {
+                entries.extend(direct_files.into_iter().map(|(name, entry)| SummaryEntry {
+                    label: name.to_string(),
+                    files: 1,
+                    size: entry.size,
+                    filter: Query::new(name),
+                    folder: None,
+                }));
+            } else if !direct_files.is_empty() {
+                let files = direct_files.len() as u64;
+                let size: u64 = direct_files.iter().map(|(_, entry)| entry.size).sum();
+                if size > 0 || files > 0 {
+                    entries.push(SummaryEntry {
+                        label: "[Folder files]".into(),
+                        files,
+                        size,
+                        filter: Query::default(),
+                        folder: None,
+                    });
+                }
+            }
             entries.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.label.cmp(&b.label)));
             entries
         }
@@ -229,6 +270,7 @@ pub fn summarize(node: &DirNode, kind: SummaryKind) -> Vec<SummaryEntry> {
                     files,
                     size,
                     filter: Query { date: Some((field, age_range(bucket, now))), ..Query::default() },
+                    folder: None,
                 })
                 .collect()
         }

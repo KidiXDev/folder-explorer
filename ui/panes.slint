@@ -1,6 +1,6 @@
 import { ListView, ScrollView, Button } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { DriveCard, SummaryRow, TreeRow } from "types.slint";
+import { DriveCard, SummaryRow, TreemapTile, TreeRow } from "types.slint";
 import { DimLabel, EmptyState, IconButton, Label, UsageBar } from "controls.slint";
 
 component TreeItem {
@@ -400,27 +400,31 @@ component SummaryTab {
         border-width: root.active ? 1px : 0px;
         border-color: Theme.card-border;
         background: root.active ? Theme.card : touch.has-hover ? Theme.hover : transparent;
-        animate background { duration: 140ms; easing: ease-out; }
+        animate background { duration: 120ms; easing: ease-out; }
     }
 
     text := DimLabel {
         text: root.label;
+        font-size: 11.5px;
         font-weight: root.active ? 600 : 400;
         horizontal-alignment: center;
         color: root.active ? Theme.text : Theme.text-dim;
-        animate color { duration: 140ms; easing: ease-out; }
+        animate color { duration: 120ms; easing: ease-out; }
     }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 }
 
 component SummaryItem {
     in property <SummaryRow> data;
+    in property <bool> highlighted;
     callback activated();
+    callback hovered(bool);
 
-    height: 44px;
+    height: 46px;
 
     Rectangle {
         x: 6px;
@@ -428,10 +432,12 @@ component SummaryItem {
         width: root.width - 12px;
         height: parent.height - 2px;
         border-radius: Theme.radius;
-        border-width: touch.has-hover ? 1px : 0px;
-        border-color: Theme.line;
-        background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
-        animate background { duration: 120ms; easing: ease-out; }
+        border-width: root.highlighted ? 1px : 0px;
+        border-color: Theme.selected-border;
+        background: touch.pressed ? Theme.pressed
+            : root.highlighted ? Theme.selected
+            : touch.has-hover ? Theme.hover
+            : transparent;
     }
 
     VerticalLayout {
@@ -439,41 +445,87 @@ component SummaryItem {
         padding-right: 14px;
         padding-top: 6px;
         padding-bottom: 7px;
-        spacing: 4px;
+        spacing: 5px;
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: 7px;
+
+            Rectangle {
+                width: 9px;
+
+                Rectangle {
+                    width: 9px;
+                    height: 9px;
+                    border-radius: 3px;
+                    background: root.data.color;
+                }
+            }
 
             Label {
                 text: root.data.label;
-                font-weight: 500;
+                font-weight: root.highlighted ? 600 : 500;
                 horizontal-stretch: 1;
             }
 
             DimLabel {
-                text: root.data.detail;
+                text: root.data.percent;
+                font-weight: 600;
+                color: root.highlighted ? Theme.text : Theme.text-dim;
+                horizontal-stretch: 0;
+            }
+
+            DimLabel {
+                text: "·  " + root.data.detail;
                 horizontal-stretch: 0;
                 horizontal-alignment: right;
             }
         }
 
-        UsageBar {
+        Rectangle {
             height: 4px;
-            ratio: root.data.ratio;
+            border-radius: 2px;
+            background: Theme.track;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                width: max(parent.height, parent.width * clamp(root.data.ratio, 0, 1));
+                height: parent.height;
+                border-radius: 2px;
+                background: root.data.color;
+                visible: root.data.ratio > 0;
+            }
         }
     }
 
     touch := TouchArea {
+        mouse-cursor: pointer;
         double-clicked => { root.activated(); }
+        changed has-hover => { root.hovered(self.has-hover); }
     }
 }
 
 export component SummaryPane {
     in property <[SummaryRow]> rows;
+    in property <[TreemapTile]> treemap-tiles;
+    in property <image> chart-image;
+    in property <string> total-size;
     in property <int> kind;
+    in-out property <int> viz-mode: 0;
+    in-out property <int> hovered-index: -1;
     in property <string> hint;
     callback kind-chosen(int);
+    callback viz-mode-chosen(int);
+    callback wheel-hovered(float, float);
+    callback row-hovered(int);
     callback activated(int);
+
+    property <bool> has-hovered: root.hovered-index >= 0 && root.hovered-index < root.rows.length;
+    property <SummaryRow> active-row: root.has-hovered
+        ? root.rows[root.hovered-index]
+        : root.rows.length > 0
+            ? root.rows[0]
+            : { label: "", detail: "", percent: "", ratio: 0, share: 0, color: transparent };
 
     VerticalLayout {
         VerticalLayout {
@@ -481,14 +533,15 @@ export component SummaryPane {
             padding-right: 10px;
             padding-top: 10px;
             padding-bottom: 8px;
-            spacing: 8px;
+            spacing: 7px;
 
             HorizontalLayout {
                 padding-left: 2px;
                 padding-right: 2px;
+                spacing: 6px;
 
                 Text {
-                    text: "Folder breakdown";
+                    text: "Storage visualizer";
                     font-size: Theme.small-text-size;
                     font-weight: 600;
                     color: Theme.text-dim;
@@ -496,28 +549,310 @@ export component SummaryPane {
                     vertical-alignment: center;
                 }
 
-                DimLabel {
-                    text: "Double-click to filter";
-                    font-size: 11px;
-                    color: Theme.text-faint;
+                Rectangle {
+                    width: 196px;
+                    height: 24px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    background: Theme.subtle-surface;
+
+                    HorizontalLayout {
+                        padding: 2px;
+                        spacing: 2px;
+
+                        for label[mode] in ["Donut", "Pie", "Treemap", "Bars"]: SummaryTab {
+                            height: 20px;
+                            label: label;
+                            active: mode == root.viz-mode;
+                            clicked => {
+                                root.viz-mode = mode;
+                                root.viz-mode-chosen(mode);
+                            }
+                        }
+                    }
                 }
             }
 
             Rectangle {
-                height: 32px;
+                height: 30px;
                 border-radius: Theme.radius;
                 border-width: 1px;
                 border-color: Theme.line;
                 background: Theme.subtle-surface;
 
                 HorizontalLayout {
-                    padding: 3px;
+                    padding: 2px;
                     spacing: 2px;
 
-                    for label[index] in ["Type", "Modified", "Created", "Accessed"]: SummaryTab {
+                    for label[index] in ["Folders", "Type", "Modified", "Created", "Accessed"]: SummaryTab {
                         label: label;
                         active: index == root.kind;
                         clicked => { root.kind-chosen(index); }
+                    }
+                }
+            }
+        }
+
+        if root.rows.length > 0 && (root.viz-mode == 0 || root.viz-mode == 1): Rectangle {
+            height: 184px;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 4px;
+                padding-bottom: 8px;
+                spacing: 12px;
+
+                Rectangle {
+                    width: 162px;
+
+                    Rectangle {
+                        width: 162px;
+                        height: 162px;
+
+                        Image {
+                            width: 162px;
+                            height: 162px;
+                            source: root.chart-image;
+                            image-fit: contain;
+                        }
+
+                        if root.viz-mode == 0: VerticalLayout {
+                            x: 36px;
+                            y: 36px;
+                            width: 90px;
+                            height: 90px;
+                            alignment: center;
+                            spacing: 2px;
+
+                            Text {
+                                text: root.has-hovered ? root.active-row.percent : "100%";
+                                font-size: 16px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                horizontal-alignment: center;
+                            }
+
+                            Text {
+                                text: root.has-hovered ? root.active-row.label : root.total-size;
+                                font-size: 11px;
+                                font-weight: 500;
+                                color: Theme.text-dim;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        wheel-touch := TouchArea {
+                            mouse-cursor: root.has-hovered ? pointer : default;
+                            moved => {
+                                root.wheel-hovered(
+                                    (self.mouse-x - self.width / 2) / (self.width / 2),
+                                    (self.mouse-y - self.height / 2) / (self.height / 2)
+                                );
+                            }
+                            changed has-hover => {
+                                if (!self.has-hover) {
+                                    root.row-hovered(-1);
+                                }
+                            }
+                            double-clicked => {
+                                if (root.hovered-index >= 0) {
+                                    root.activated(root.hovered-index);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    horizontal-stretch: 1;
+
+                    Rectangle {
+                        height: 54px;
+                        border-radius: Theme.radius;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        background: Theme.subtle-surface;
+
+                        VerticalLayout {
+                            padding-left: 9px;
+                            padding-right: 9px;
+                            alignment: center;
+                            spacing: 2px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                Rectangle {
+                                    width: 8px;
+
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 2.5px;
+                                        background: root.active-row.color;
+                                    }
+                                }
+
+                                Label {
+                                    text: root.active-row.label;
+                                    font-weight: 600;
+                                    horizontal-stretch: 1;
+                                }
+
+                                DimLabel {
+                                    text: root.active-row.percent;
+                                    font-weight: 600;
+                                    color: Theme.accent;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+
+                            DimLabel {
+                                text: root.active-row.detail;
+                                font-size: 11px;
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        for item[idx] in [
+                            root.rows[0],
+                            root.rows.length > 1 ? root.rows[1] : root.rows[0],
+                            root.rows.length > 2 ? root.rows[2] : root.rows[0],
+                            root.rows.length > 3 ? root.rows[3] : root.rows[0],
+                        ]: Rectangle {
+                            height: idx < root.rows.length ? 18px : 0px;
+                            visible: idx < root.rows.length;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+
+                                Rectangle {
+                                    width: 7px;
+
+                                    Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 2px;
+                                        background: item.color;
+                                    }
+                                }
+
+                                DimLabel {
+                                    text: item.label;
+                                    font-size: 11px;
+                                    color: root.hovered-index == idx ? Theme.text : Theme.text-dim;
+                                    font-weight: root.hovered-index == idx ? 600 : 400;
+                                    horizontal-stretch: 1;
+                                }
+
+                                DimLabel {
+                                    text: item.percent;
+                                    font-size: 11px;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.rows.length > 0 && root.viz-mode == 2: Rectangle {
+            height: 176px;
+
+            Rectangle {
+                x: 10px;
+                y: 2px;
+                width: parent.width - 20px;
+                height: 164px;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Theme.line;
+                background: Theme.subtle-surface;
+                clip: true;
+
+                for tile in root.treemap-tiles: Rectangle {
+                    x: tile.x * parent.width + 1px;
+                    y: tile.y * parent.height + 1px;
+                    width: max(0px, tile.w * parent.width - 2px);
+                    height: max(0px, tile.h * parent.height - 2px);
+                    border-radius: 3px;
+                    border-width: root.hovered-index == tile.index ? 1.5px : 0px;
+                    border-color: #ffffffd0;
+                    background: root.hovered-index == tile.index ? tile.color.brighter(0.16) : tile.color;
+                    opacity: root.hovered-index < 0 || root.hovered-index == tile.index ? 0.92 : 0.68;
+                    clip: true;
+
+                    if self.width > 42px && self.height > 22px: VerticalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        padding-top: 4px;
+                        alignment: start;
+                        spacing: 1px;
+
+                        Text {
+                            text: tile.label;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: #ffffff;
+                            overflow: elide;
+                        }
+
+                        if parent.height > 36px: Text {
+                            text: tile.percent;
+                            font-size: 10px;
+                            color: #ffffffd8;
+                            overflow: elide;
+                        }
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.row-hovered(tile.index);
+                            } else if (root.hovered-index == tile.index) {
+                                root.row-hovered(-1);
+                            }
+                        }
+                        double-clicked => {
+                            if (tile.index < root.rows.length) {
+                                root.activated(tile.index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.rows.length > 0: Rectangle {
+            height: 22px;
+
+            Rectangle {
+                x: 12px;
+                y: 5px;
+                width: parent.width - 24px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.track;
+                clip: true;
+
+                HorizontalLayout {
+                    spacing: 1px;
+
+                    for item[idx] in root.rows: Rectangle {
+                        width: idx < 10 ? max(0px, (parent.width - 9px) * item.share) : 0px;
+                        height: parent.height;
+                        background: item.color;
+                        opacity: root.hovered-index < 0 || root.hovered-index == idx ? 1.0 : 0.55;
                     }
                 }
             }
@@ -537,7 +872,15 @@ export component SummaryPane {
 
                 for row[index] in root.rows: SummaryItem {
                     data: row;
+                    highlighted: root.hovered-index == index;
                     activated => { root.activated(index); }
+                    hovered(active) => {
+                        if (active) {
+                            root.row-hovered(index);
+                        } else if (root.hovered-index == index) {
+                            root.row-hovered(-1);
+                        }
+                    }
                 }
             }
 

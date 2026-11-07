@@ -44,7 +44,22 @@ export struct DriveCard {
 export struct SummaryRow {
     label: string,
     detail: string,
+    percent: string,
     ratio: float,
+    share: float,
+    color: color,
+}
+
+export struct TreemapTile {
+    index: int,
+    label: string,
+    detail: string,
+    percent: string,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    color: color,
 }
 
 export struct ColumnChoice {

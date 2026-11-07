@@ -1,3 +1,4 @@
+use crate::chart;
 use crate::export;
 use crate::file_ops;
 use crate::format::{Unit, format_elapsed, format_size, plural};
@@ -10,7 +11,7 @@ use crate::query::{self, DateField, DateRule, Query, SummaryEntry, SummaryKind};
 use crate::scan::{Cache, DirNode, ErrorLog, Level, Live, ScanContext, ScanError, SubDir, read_level, scan_tree};
 use crate::settings::Settings;
 use crate::sidebar::Sidebar;
-use crate::ui::{AppWindow, ColumnChoice, ColumnInfo, Crumb, DriveCard, SummaryRow};
+use crate::ui::{AppWindow, ColumnChoice, ColumnInfo, Crumb, DriveCard};
 use rayon::prelude::*;
 use slint::{
     CloseRequestResponse, ComponentHandle, Image, LogicalSize, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak,
@@ -34,7 +35,8 @@ const SEARCH_DELAY: Duration = Duration::from_millis(180);
 const NEARLY_FULL: f32 = 0.9;
 const DRIVE_ICON_SIZE: u32 = 48;
 const BYTES_PER_MEGABYTE: f64 = 1_048_576.0;
-const SUMMARY_KINDS: [SummaryKind; 4] = [
+const SUMMARY_KINDS: [SummaryKind; 5] = [
+    SummaryKind::Folders,
     SummaryKind::Extension,
     SummaryKind::Age(DateField::Modified),
     SummaryKind::Age(DateField::Created),
@@ -712,18 +714,15 @@ impl App {
     }
 
     fn show_summary(&self) {
-        let largest = self.summary.iter().map(|entry| entry.size).max().unwrap_or(0).max(1) as f32;
         let unit = self.settings.unit;
-        let rows: Vec<SummaryRow> = self
-            .summary
-            .iter()
-            .map(|entry| SummaryRow {
-                label: entry.label.as_str().into(),
-                detail: entry.detail(unit).into(),
-                ratio: entry.size as f32 / largest,
-            })
-            .collect();
+        let (rows, total) = chart::build_rows(&self.summary, unit);
+        let treemap = chart::build_treemap(&self.summary, unit);
         let ui = self.ui();
+        let donut = ui.get_summary_viz_mode() == 0;
+        ui.set_summary_hovered_index(-1);
+        ui.set_summary_total_size(format_size(total, unit).into());
+        ui.set_summary_chart_image(chart::render_wheel(&self.summary, donut, None));
+        ui.set_summary_treemap(ModelRc::new(VecModel::from(treemap)));
         ui.set_summary_rows(ModelRc::new(VecModel::from(rows)));
         ui.set_summary_kind(self.summary_kind as i32);
         let hint = if self.location == Location::Computer {
@@ -734,18 +733,43 @@ impl App {
         ui.set_summary_hint(hint.into());
     }
 
+    fn refresh_summary_wheel(&self, hovered: Option<usize>) {
+        let ui = self.ui();
+        let mode = ui.get_summary_viz_mode();
+        if mode <= 1 {
+            ui.set_summary_chart_image(chart::render_wheel(&self.summary, mode == 0, hovered));
+        }
+    }
+
+    fn hover_summary_row(&self, index: i32) {
+        let ui = self.ui();
+        let clamped = if index >= 0 && (index as usize) < self.summary.len() { index } else { -1 };
+        if ui.get_summary_hovered_index() != clamped {
+            ui.set_summary_hovered_index(clamped);
+            self.refresh_summary_wheel((clamped >= 0).then_some(clamped as usize));
+        }
+    }
+
+    fn hover_summary_wheel(&self, nx: f32, ny: f32) {
+        let donut = self.ui().get_summary_viz_mode() == 0;
+        let hit = chart::hit_test_wheel(&self.summary, donut, nx, ny).map_or(-1, |idx| idx as i32);
+        self.hover_summary_row(hit);
+    }
+
     fn choose_summary(&mut self, kind: usize) {
-        self.summary_kind = kind;
+        self.summary_kind = kind.min(SUMMARY_KINDS.len() - 1);
         self.summary.clear();
         self.show_summary();
         self.refresh_summary();
     }
 
     fn activate_summary(&mut self, row: usize) {
-        if let Some(entry) = self.summary.get(row) {
-            let filter = entry.filter.clone();
+        let Some(entry) = self.summary.get(row).cloned() else { return };
+        if let (Some(folder), Location::Folder(parent)) = (entry.folder, &self.location) {
+            self.go(Location::Folder(parent.join(folder)));
+        } else if !entry.filter.is_empty() {
             self.ui().set_search_text(SharedString::new());
-            self.run_query(filter);
+            self.run_query(entry.filter);
         }
     }
 
@@ -1436,6 +1460,12 @@ fn wire(ui: &AppWindow, shared: &Shared) {
     on!(on_cursor_moved, |app, delta, extend| app.move_cursor(delta, extend));
     on!(on_search_changed, |app| app.schedule_search());
     on!(on_summary_kind_chosen, |app, kind| app.choose_summary(kind as usize));
+    on!(on_summary_viz_mode_chosen, |app, _mode| {
+        let hovered = app.ui().get_summary_hovered_index();
+        app.refresh_summary_wheel((hovered >= 0).then_some(hovered as usize));
+    });
+    on!(on_summary_wheel_hovered, |app, nx, ny| app.hover_summary_wheel(nx, ny));
+    on!(on_summary_row_hovered, |app, index| app.hover_summary_row(index));
     on!(on_summary_activated, |app, row| app.activate_summary(row as usize));
     on!(on_summary_toggled, |app| app.refresh_summary());
     on!(on_unit_chosen, |app, index| app.choose_unit(index as usize));
