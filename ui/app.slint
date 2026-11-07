@@ -1,12 +1,62 @@
 import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow } from "types.slint";
-import { CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, UsageBar } from "controls.slint";
+import { CaptionButton, CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, UsageBar } from "controls.slint";
 import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
 import { DrivesView, ErrorPanel, Sidebar, SummaryPane } from "panes.slint";
 
 export { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreeRow }
+
+component TitleBar inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <bool> maximized;
+    callback minimize-requested();
+    callback maximize-toggled();
+    callback close-requested();
+
+    height: Theme.titlebar-height;
+    background: Theme.header;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 8px;
+
+        Image {
+            source: root.icon;
+            width: 16px;
+        }
+
+        DimLabel {
+            text: root.title;
+            horizontal-stretch: 1;
+        }
+
+        HorizontalLayout {
+            spacing: 0;
+
+            CaptionButton {
+                icon: @image-url("icons/minimize.svg");
+                label: "Minimize";
+                clicked => { root.minimize-requested(); }
+            }
+
+            CaptionButton {
+                icon: root.maximized ? @image-url("icons/restore.svg") : @image-url("icons/maximize.svg");
+                label: root.maximized ? "Restore" : "Maximize";
+                clicked => { root.maximize-toggled(); }
+            }
+
+            CaptionButton {
+                icon: @image-url("icons/close.svg");
+                label: "Close";
+                danger: true;
+                clicked => { root.close-requested(); }
+            }
+        }
+    }
+}
 
 component Breadcrumbs {
     in property <[Crumb]> crumbs;
@@ -218,6 +268,8 @@ component SearchFilters {
 export component AppWindow inherits Window {
     title: "Folder Explorer";
     icon: @image-url("icons/app.svg");
+    no-frame: true;
+    resize-border-width: root.maximized ? 0px : 5px;
     min-width: 760px;
     min-height: 440px;
     background: Theme.surface;
@@ -377,7 +429,25 @@ export component AppWindow inherits Window {
             reject
         }
 
+        WindowMoveArea {
+            y: 0;
+            height: Theme.titlebar-height + Theme.toolbar-height;
+
+            TouchArea {
+                double-clicked => { root.maximized = !root.maximized; }
+            }
+        }
+
         VerticalLayout {
+            TitleBar {
+                icon: root.icon;
+                title: root.title;
+                maximized: root.maximized;
+                minimize-requested => { root.minimized = true; }
+                maximize-toggled => { root.maximized = !root.maximized; }
+                close-requested => { root.close(); }
+            }
+
             Rectangle {
                 height: Theme.toolbar-height;
                 background: Theme.header;
@@ -385,7 +455,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px;
                     padding-right: 10px;
-                    padding-top: 8px;
+                    padding-top: 2px;
                     padding-bottom: 8px;
                     spacing: 3px;
 
@@ -1163,8 +1233,9 @@ export component AppWindow inherits Window {
     }
 
     if root.errors-open: Rectangle {
+        y: Theme.titlebar-height;
         width: root.width;
-        height: root.height;
+        height: root.height - Theme.titlebar-height;
         background: Theme.backdrop;
 
         TouchArea {
@@ -1172,10 +1243,10 @@ export component AppWindow inherits Window {
         }
 
         ErrorPanel {
-            x: (root.width - self.width) / 2;
-            y: (root.height - self.height) / 2;
-            width: min(root.width - 80px, 760px);
-            height: min(root.height - 80px, 520px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(parent.width - 80px, 760px);
+            height: min(parent.height - 80px, 520px);
             errors: root.errors;
             closed => { root.errors-open = false; }
         }

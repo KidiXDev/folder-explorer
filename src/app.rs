@@ -1514,6 +1514,7 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
         }
         app.show_location();
     }
+    let _ = ui.as_weak().upgrade_in_event_loop(|ui| platform::restore_frame_appearance(ui.window()));
     slint::run_event_loop()?;
     ui.hide()
 }

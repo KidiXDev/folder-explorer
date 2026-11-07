@@ -54,6 +54,40 @@ export component IconButton {
     }
 }
 
+export component CaptionButton {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> danger;
+    callback clicked();
+
+    property <bool> danger-shown: root.danger && (touch.has-hover || touch.pressed);
+
+    width: 46px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    Rectangle {
+        background: root.danger-shown ? (touch.pressed ? Theme.caption-close-pressed : Theme.caption-close)
+            : touch.pressed ? Theme.pressed
+            : touch.has-hover ? Theme.hover
+            : transparent;
+        animate background { duration: 120ms; easing: ease-out; }
+    }
+
+    Image {
+        source: root.icon;
+        width: 10px;
+        height: 10px;
+        colorize: root.danger-shown ? #ffffff : Theme.text;
+        animate colorize { duration: 120ms; }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
 export component CommandButton {
     in property <image> icon;
     in property <string> text;

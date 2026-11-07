@@ -8,6 +8,7 @@ use std::process::Command;
 use std::ptr::{copy_nonoverlapping, null, null_mut};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Storage::EnhancedStorage::PKEY_Home_IsPinned;
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -18,7 +19,10 @@ use windows::Win32::UI::Shell::{
     SIGDN_NORMALDISPLAY,
 };
 use windows::core::{HSTRING, Interface};
-use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, MAX_PATH, SYSTEMTIME};
+use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HWND, MAX_PATH, SYSTEMTIME};
+use windows_sys::Win32::Graphics::Dwm::{
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, MoveFileW,
 };
@@ -33,6 +37,7 @@ use windows_sys::Win32::System::Time::{
     FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime, TzSpecificLocalTimeToSystemTime,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+use windows_sys::Win32::UI::Controls::MARGINS;
 use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_HIDEREADONLY, OFN_OVERWRITEPROMPT, OPENFILENAMEW,
 };
@@ -117,6 +122,24 @@ pub fn allow_dark_menus() {
             let flush_menu_themes: unsafe extern "system" fn() = transmute(flush_menu_themes);
             flush_menu_themes();
         }
+    }
+}
+
+pub fn restore_frame_appearance(window: &slint::Window) {
+    let window = window.window_handle();
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
+    let hwnd = handle.hwnd.get() as HWND;
+    let frame = MARGINS { cxLeftWidth: 1, cxRightWidth: 1, cyTopHeight: 1, cyBottomHeight: 1 };
+    let corners = DWMWCP_ROUND;
+    unsafe {
+        DwmExtendFrameIntoClientArea(hwnd, &frame);
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&raw const corners).cast(),
+            size_of_val(&corners) as u32,
+        );
     }
 }
 

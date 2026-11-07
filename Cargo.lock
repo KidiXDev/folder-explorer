@@ -1268,6 +1268,7 @@ version = "0.1.0"
 dependencies = [
  "md-5",
  "mimalloc",
+ "raw-window-handle",
  "rayon",
  "sha1",
  "sha2",
@@ -4112,6 +4113,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",
