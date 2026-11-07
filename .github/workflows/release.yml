@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the crate version
+        run: |
+          crate_version=$(cargo pkgid | sed 's/.*[#@]//')
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$crate_version" != "$tag_version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate_version"
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          name="folder-explorer-${GITHUB_REF_NAME}-windows-x64"
+          mkdir "$name"
+          cp target/release/folder-explorer.exe README.md LICENSE "$name/"
+          7z a "$name.zip" "./$name/*"
+          sha256sum "$name.zip" > "$name.zip.sha256"
+          echo "ASSET=$name.zip" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
