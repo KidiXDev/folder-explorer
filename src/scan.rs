@@ -44,7 +44,7 @@ impl FileEntry {
 }
 
 pub struct DirNode {
-    pub name: Box<str>,
+    pub name: Box<OsStr>,
     pub attrs: u32,
     pub times: Times,
     pub size: u64,
@@ -54,7 +54,7 @@ pub struct DirNode {
     pub complete: bool,
     pub children: Vec<Arc<DirNode>>,
     pub entries: Vec<FileEntry>,
-    names: String,
+    names: Vec<u8>,
 }
 
 impl DirNode {
@@ -70,12 +70,12 @@ impl DirNode {
             complete: true,
             children: Vec::new(),
             entries: Vec::new(),
-            names: String::new(),
+            names: Vec::new(),
         }
     }
 
-    fn push_entry(&mut self, name: &str, meta: &fs::Metadata) -> u64 {
-        self.names.push_str(name);
+    fn push_entry(&mut self, name: &OsStr, meta: &fs::Metadata) -> u64 {
+        self.names.extend_from_slice(name.as_encoded_bytes());
         let size = meta.file_size();
         self.entries.push(FileEntry {
             name_end: self.names.len() as u32,
@@ -86,12 +86,12 @@ impl DirNode {
         size
     }
 
-    fn add_file(&mut self, name: &str, meta: &fs::Metadata) {
+    fn add_file(&mut self, name: &OsStr, meta: &fs::Metadata) {
         self.size += self.push_entry(name, meta);
         self.file_count += 1;
     }
 
-    fn add_link(&mut self, name: &str, meta: &fs::Metadata) {
+    fn add_link(&mut self, name: &OsStr, meta: &fs::Metadata) {
         self.push_entry(name, meta);
     }
 
@@ -106,11 +106,11 @@ impl DirNode {
         self.children = children;
     }
 
-    pub fn files(&self) -> impl Iterator<Item = (&str, &FileEntry)> {
+    pub fn files(&self) -> impl Iterator<Item = (&OsStr, &FileEntry)> {
         let mut start = 0;
         self.entries.iter().map(move |entry| {
             let end = entry.name_end as usize;
-            let name = &self.names[start..end];
+            let name = unsafe { OsStr::from_encoded_bytes_unchecked(&self.names[start..end]) };
             start = end;
             (name, entry)
         })
@@ -118,7 +118,7 @@ impl DirNode {
 
     fn renamed(&self, name: &OsStr) -> Self {
         Self {
-            name: name.to_string_lossy().into(),
+            name: name.into(),
             attrs: self.attrs,
             times: self.times,
             size: self.size,
@@ -133,17 +133,13 @@ impl DirNode {
     }
 
     fn child(&self, name: &OsStr) -> Option<&Arc<DirNode>> {
-        self.children.iter().find(|child| same_name(&child.name, name))
+        self.children.iter().find(|child| &*child.name == name)
     }
-}
-
-fn same_name(known: &str, wanted: &OsStr) -> bool {
-    wanted.to_str().is_some_and(|wanted| known.eq_ignore_ascii_case(wanted))
 }
 
 #[derive(Clone)]
 pub struct SubDir {
-    pub name: Box<str>,
+    pub name: Box<OsStr>,
     pub path: PathBuf,
     pub attrs: u32,
     pub times: Times,
@@ -157,7 +153,7 @@ impl SubDir {
         }
         let name = path.file_name().unwrap_or(path.as_os_str());
         Ok(Self {
-            name: name.to_string_lossy().into(),
+            name: name.into(),
             path: path.to_path_buf(),
             attrs: meta.file_attributes(),
             times: Times::of(&meta),
@@ -210,13 +206,12 @@ pub fn read_level(dir: &SubDir, errors: &ErrorLog) -> Result<Level, io::Error> {
         }) {
             Ok((meta, file_type, entry)) => {
                 let name = entry.file_name();
-                let name = name.to_string_lossy();
                 let attrs = meta.file_attributes();
                 if is_link(&entry, file_type, attrs) {
                     node.add_link(&name, &meta);
                 } else if file_type.is_dir() {
                     subdirs.push(SubDir {
-                        name: name.as_ref().into(),
+                        name: name.into_boxed_os_str(),
                         path: entry.path(),
                         attrs,
                         times: Times::of(&meta),
@@ -350,9 +345,9 @@ impl Cache {
         for part in below {
             let mut next = None;
             for child in &node.children {
-                if same_name(&child.name, part) {
+                if &*child.name == part {
                     next = Some(child.clone());
-                } else {
+                } else if !child.name.eq_ignore_ascii_case(part) {
                     self.roots.insert(at.join(&*child.name), child.clone());
                 }
             }
@@ -368,6 +363,8 @@ impl Cache {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
     use std::process::Command;
     use std::sync::atomic::AtomicUsize;
 
@@ -423,12 +420,49 @@ pub mod tests {
         let tree = TempTree::new();
         tree.file("one.txt", 1).file("two words.txt", 2).file("日本語.txt", 3);
         let node = scan(&tree.0);
-        let mut names: Vec<_> = node.files().map(|(name, entry)| (name.to_string(), entry.size)).collect();
+        let mut names: Vec<_> = node.files().map(|(name, entry)| (name.to_string_lossy().into_owned(), entry.size)).collect();
         names.sort();
         assert_eq!(
             names,
             [("one.txt".into(), 1), ("two words.txt".into(), 2), ("日本語.txt".into(), 3)]
         );
+    }
+
+    #[test]
+    fn names_that_are_not_valid_unicode_stay_distinct() {
+        let tree = TempTree::new();
+        let names = [OsString::from_wide(&[0x61, 0xD800]), OsString::from_wide(&[0x61, 0xD801])];
+        for (index, name) in names.iter().enumerate() {
+            fs::write(tree.0.join(name), vec![0; index + 1]).unwrap();
+        }
+        let node = scan(&tree.0);
+        let mut found: Vec<_> = node.files().map(|(name, entry)| (name.to_os_string(), entry.size)).collect();
+        found.sort();
+        assert_eq!(found, [(names[0].clone(), 1), (names[1].clone(), 2)]);
+    }
+
+    #[test]
+    fn neighbouring_names_do_not_merge_their_surrogates() {
+        let tree = TempTree::new();
+        let names = [OsString::from_wide(&[0x61, 0xD83D]), OsString::from_wide(&[0xDE00, 0x62])];
+        for name in &names {
+            fs::write(tree.0.join(name), [0]).unwrap();
+        }
+        let node = scan(&tree.0);
+        let mut found: Vec<_> = node.files().map(|(name, _)| name.to_os_string()).collect();
+        found.sort();
+        assert_eq!(found, names);
+    }
+
+    #[test]
+    fn folders_with_invalid_names_are_found_in_the_cache() {
+        let tree = TempTree::new();
+        let folder = tree.0.join(OsString::from_wide(&[0x61, 0xD800]));
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("inside.txt"), [0; 3]).unwrap();
+        let mut cache = Cache::default();
+        cache.store(&tree.0, &scan(&tree.0));
+        assert_eq!(cache.get(&folder).unwrap().size, 3);
     }
 
     #[test]
@@ -507,7 +541,7 @@ pub mod tests {
         assert!(cache.get(&from).is_none());
         assert!(cache.get(&tree.0).is_none());
         let moved = cache.get(&to).unwrap();
-        assert_eq!((&*moved.name, moved.size, moved.file_count), ("renamed", 50, 2));
+        assert_eq!((&*moved.name, moved.size, moved.file_count), (OsStr::new("renamed"), 50, 2));
         assert_eq!(cache.get(&to.join("deep")).unwrap().size, 30);
         assert_eq!(moved.files().next().unwrap().0, "b.txt");
         assert_eq!(cache.get(&tree.0.join("other")).unwrap().size, 40);
@@ -521,6 +555,40 @@ pub mod tests {
         cache.rename(&tree.0.join("a.txt"), &tree.0.join("b.txt"));
         assert!(cache.get(&tree.0).is_none());
         assert_eq!(cache.get(&tree.0.join("sub")).unwrap().size, 50);
+    }
+
+    fn subdir(name: &str) -> SubDir {
+        SubDir { name: OsStr::new(name).into(), path: PathBuf::from(name), attrs: 0, times: Times::default() }
+    }
+
+    fn sized_folder(name: &str, size: u64) -> Arc<DirNode> {
+        Arc::new(DirNode { size, ..DirNode::new(&subdir(name)) })
+    }
+
+    fn cached_folders(root: &Path, children: Vec<Arc<DirNode>>) -> Cache {
+        let mut parent = DirNode::new(&subdir("root"));
+        parent.absorb(children);
+        let mut cache = Cache::default();
+        cache.store(root, &Arc::new(parent));
+        cache
+    }
+
+    #[test]
+    fn siblings_differing_only_by_case_stay_apart() {
+        let root = PathBuf::from(r"C:\root");
+        let cache = cached_folders(&root, vec![sized_folder("foo", 1), sized_folder("Foo", 2)]);
+        assert_eq!(cache.get(&root.join("foo")).unwrap().size, 1);
+        assert_eq!(cache.get(&root.join("Foo")).unwrap().size, 2);
+        assert!(cache.get(&root.join("FOO")).is_none());
+    }
+
+    #[test]
+    fn invalidating_a_differently_cased_path_keeps_nothing_it_may_name() {
+        let root = PathBuf::from(r"C:\root");
+        let mut cache = cached_folders(&root, vec![sized_folder("foo", 1), sized_folder("other", 2)]);
+        cache.invalidate(&root.join("FOO").join("inner"));
+        assert!(cache.get(&root.join("foo")).is_none());
+        assert_eq!(cache.get(&root.join("other")).unwrap().size, 2);
     }
 
     #[test]

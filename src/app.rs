@@ -18,6 +18,7 @@ use slint::{
 };
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::os::windows::fs::MetadataExt;
@@ -57,7 +58,7 @@ enum Location {
 enum Message {
     Drives(Vec<Drive>),
     Pins(Vec<(PathBuf, String)>),
-    TreeChildren { parent: PathBuf, folders: Vec<(String, u32)> },
+    TreeChildren { parent: PathBuf, folders: Vec<(OsString, u32)> },
     Listed { scan: u64, items: Vec<Item>, lives: Arc<Vec<Live>> },
     Unreadable { scan: u64, reason: String },
     Disk { scan: u64, title: String, usage: Option<DiskUsage> },
@@ -134,7 +135,7 @@ fn scan_folder(
         }
     };
 
-    let parent: Arc<str> = path.to_string_lossy().into();
+    let parent: Arc<Path> = path.as_path().into();
     let lives: Arc<Vec<Live>> = Arc::new(subdirs.iter().map(|_| Live::default()).collect());
     let mut items: Vec<Item> = subdirs.iter().map(|dir| Item::pending_folder(dir, &parent)).collect();
     items.extend(node.files().map(|(name, entry)| Item::file(name, entry, &parent)));
@@ -180,6 +181,14 @@ fn normalize(text: &str) -> PathBuf {
     absolute.components().collect()
 }
 
+fn resolve_target(location: &Location, text: &str) -> PathBuf {
+    let exact = match location {
+        Location::Folder(path) => path.ancestors().find(|ancestor| ancestor.to_string_lossy() == text),
+        Location::Computer => None,
+    };
+    exact.map_or_else(|| normalize(text), Path::to_path_buf)
+}
+
 fn crumbs_for(location: &Location) -> Vec<Crumb> {
     let mut crumbs = vec![Crumb { name: "This PC".into(), target: SharedString::new() }];
     if let Location::Folder(path) = location {
@@ -196,14 +205,13 @@ fn crumbs_for(location: &Location) -> Vec<Crumb> {
     crumbs
 }
 
-fn list_subfolders(parent: &Path, show_hidden: bool) -> Vec<(String, u32)> {
+fn list_subfolders(parent: &Path, show_hidden: bool) -> Vec<(OsString, u32)> {
     let Ok(entries) = fs::read_dir(parent) else { return Vec::new() };
     entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .filter_map(|entry| Some((entry.file_name(), entry.metadata().ok()?.file_attributes())))
         .filter(|(_, attrs)| show_hidden || attrs & ATTR_HIDDEN == 0)
-        .map(|(name, attrs)| (name.to_string_lossy().to_string(), attrs))
         .collect()
 }
 
@@ -397,7 +405,8 @@ impl App {
     }
 
     fn open_target(&mut self, target: &str) {
-        let location = if target.is_empty() { Location::Computer } else { Location::Folder(normalize(target)) };
+        let location =
+            if target.is_empty() { Location::Computer } else { Location::Folder(resolve_target(&self.location, target)) };
         self.go(location);
     }
 
@@ -406,7 +415,7 @@ impl App {
         if text.eq_ignore_ascii_case("this pc") {
             self.go(Location::Computer);
         } else if !text.is_empty() {
-            self.go(Location::Folder(normalize(text)));
+            self.go(Location::Folder(resolve_target(&self.location, text)));
         }
     }
 
@@ -669,7 +678,7 @@ impl App {
         let search = self.search_id;
         self.spawn(move |sender| {
             let started = Instant::now();
-            let items = query::search(&node, &path.to_string_lossy(), &query);
+            let items = query::search(&node, &path, &query);
             let seconds = started.elapsed().as_secs_f64();
             let _ = sender.send(Message::Found { search, items, seconds });
         });
@@ -1125,8 +1134,8 @@ impl App {
             "copy" => self.copy_selection(),
             "rename" => self.begin_rename(),
             "copy-path" => {
-                let paths: Vec<String> = self.selected_paths().iter().map(|path| path.display().to_string()).collect();
-                platform::copy_text(&paths.join("\r\n"));
+                let paths: Vec<OsString> = self.selected_paths().into_iter().map(PathBuf::into_os_string).collect();
+                platform::copy_text(paths.join(OsStr::new("\r\n")));
             }
             "select-all" => {
                 self.list.change_selection(ListState::select_all);
@@ -1362,7 +1371,7 @@ fn commit_rename(shared: &Shared, text: &str) {
     let ui = shared.borrow().ui();
     ui.invoke_focus_list();
     let Some(old) = old else { return };
-    if old.file_name().is_some_and(|current| current == text) {
+    if old.file_name().is_some_and(|current| current.to_string_lossy() == text) {
         return;
     }
     if let Err(reason) = file_ops::validate_name(text) {
@@ -1588,6 +1597,15 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
 mod tests {
     use super::*;
     use crate::item::HASH_NAMES;
+    use std::os::windows::ffi::OsStringExt;
+
+    #[test]
+    fn breadcrumb_text_maps_back_to_the_exact_folder() {
+        let parent = Path::new(r"C:\data").join(OsString::from_wide(&[0x61, 0xD800]));
+        let location = Location::Folder(parent.join("inner"));
+        assert_eq!(resolve_target(&location, &parent.to_string_lossy()), parent);
+        assert_eq!(resolve_target(&location, r"D:\other"), PathBuf::from(r"D:\other"));
+    }
 
     #[test]
     fn hash_names_cover_every_checksum_column() {

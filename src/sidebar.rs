@@ -5,6 +5,7 @@ use crate::settings::TreeMemory;
 use crate::ui::TreeRow;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -301,7 +302,7 @@ impl Sidebar {
         self.nodes.iter().any(|node| node.expanded && node.path.as_deref() == Some(path))
     }
 
-    pub fn set_children(&mut self, parent: &Path, mut folders: Vec<(String, u32)>) -> Option<PathBuf> {
+    pub fn set_children(&mut self, parent: &Path, mut folders: Vec<(OsString, u32)>) -> Option<PathBuf> {
         let Some(row) = (self.root..self.nodes.len()).find(|&row| self.nodes[row].path.as_deref() == Some(parent)) else {
             return self.advance();
         };
@@ -309,13 +310,13 @@ impl Sidebar {
             self.collapse(row);
         }
         let before_len = self.nodes.len();
-        folders.sort_by(|(a, _), (b, _)| compare_text(a, b));
+        folders.sort_by(|(a, _), (b, _)| compare_text(&a.to_string_lossy(), &b.to_string_lossy()));
         let depth = self.nodes[row].depth + 1;
         let children: Vec<Node> = folders
             .into_iter()
             .map(|(name, attrs)| Node {
                 path: Some(parent.join(&name)),
-                name,
+                name: name.to_string_lossy().into_owned(),
                 depth,
                 kind: KIND_FOLDER,
                 attrs,

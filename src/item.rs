@@ -2,6 +2,7 @@ use crate::format::{Unit, format_size, group_digits};
 use crate::platform;
 use crate::scan::{DirNode, FileEntry, SubDir, Times};
 use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,7 +28,8 @@ pub enum ItemState {
 #[derive(Clone, Debug)]
 pub struct Item {
     pub name: Box<str>,
-    pub parent: Arc<str>,
+    pub native_name: Option<Box<OsStr>>,
+    pub parent: Arc<Path>,
     pub is_dir: bool,
     pub attrs: u32,
     pub times: Times,
@@ -38,10 +40,19 @@ pub struct Item {
     pub hashes: Option<Box<[String; 4]>>,
 }
 
+fn split_name(name: &OsStr) -> (Box<str>, Option<Box<OsStr>>) {
+    match name.to_str() {
+        Some(text) => (text.into(), None),
+        None => (name.to_string_lossy().into(), Some(name.into())),
+    }
+}
+
 impl Item {
-    pub fn pending_folder(dir: &SubDir, parent: &Arc<str>) -> Self {
+    pub fn pending_folder(dir: &SubDir, parent: &Arc<Path>) -> Self {
+        let (name, native_name) = split_name(&dir.name);
         Self {
-            name: dir.name.clone(),
+            name,
+            native_name,
             parent: parent.clone(),
             is_dir: true,
             attrs: dir.attrs,
@@ -54,9 +65,11 @@ impl Item {
         }
     }
 
-    pub fn file(name: &str, entry: &FileEntry, parent: &Arc<str>) -> Self {
+    pub fn file(name: &OsStr, entry: &FileEntry, parent: &Arc<Path>) -> Self {
+        let (name, native_name) = split_name(name);
         Self {
-            name: name.into(),
+            name,
+            native_name,
             parent: parent.clone(),
             is_dir: entry.attrs & ATTR_DIRECTORY != 0,
             attrs: entry.attrs,
@@ -69,9 +82,11 @@ impl Item {
         }
     }
 
-    pub fn folder(node: &DirNode, parent: &Arc<str>) -> Self {
+    pub fn folder(node: &DirNode, parent: &Arc<Path>) -> Self {
+        let (name, native_name) = split_name(&node.name);
         let mut item = Self {
-            name: node.name.clone(),
+            name,
+            native_name,
             parent: parent.clone(),
             is_dir: true,
             attrs: node.attrs,
@@ -98,7 +113,7 @@ impl Item {
     }
 
     pub fn path(&self) -> PathBuf {
-        Path::new(&*self.parent).join(&*self.name)
+        self.parent.join(self.native_name.as_deref().unwrap_or(OsStr::new(&*self.name)))
     }
 
     pub fn is_hidden(&self) -> bool {
@@ -286,7 +301,7 @@ impl Column {
             Column::Type => item.type_label(),
             Column::Attributes => item.attributes_label(),
             Column::Status => item.status_label().into(),
-            Column::Location => item.parent.to_string(),
+            Column::Location => item.parent.to_string_lossy().into_owned(),
             Column::Md5 | Column::Sha1 | Column::Sha256 | Column::Sha512 => {
                 item.hash_label(self.hash_slot().unwrap_or(0))
             }
@@ -321,7 +336,7 @@ impl Column {
             Column::Type => compare_text(a.extension(), b.extension()),
             Column::Attributes => a.attrs.cmp(&b.attrs),
             Column::Status => a.status_label().cmp(b.status_label()),
-            Column::Location => compare_text(&a.parent, &b.parent),
+            Column::Location => compare_text(&a.parent.to_string_lossy(), &b.parent.to_string_lossy()),
             Column::Md5 | Column::Sha1 | Column::Sha256 | Column::Sha512 => {
                 let slot = self.hash_slot().unwrap_or(0);
                 a.hash_label(slot).cmp(&b.hash_label(slot))
@@ -349,7 +364,8 @@ mod tests {
     fn file(name: &str) -> Item {
         Item {
             name: name.into(),
-            parent: Arc::from(r"C:\data"),
+            native_name: None,
+            parent: Arc::from(Path::new(r"C:\data")),
             is_dir: false,
             attrs: 0,
             times: Times::default(),

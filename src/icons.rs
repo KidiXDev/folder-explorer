@@ -368,7 +368,8 @@ mod tests {
     fn item(name: &str, is_dir: bool, attrs: u32) -> Item {
         Item {
             name: name.into(),
-            parent: Arc::from(r"C:\data"),
+            native_name: None,
+            parent: Arc::from(Path::new(r"C:\data")),
             is_dir,
             attrs,
             times: Times::default(),

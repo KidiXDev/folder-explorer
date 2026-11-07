@@ -375,12 +375,14 @@ mod tests {
     use super::*;
     use crate::item::ATTR_HIDDEN;
     use crate::scan::Times;
+    use std::path::Path;
     use std::sync::Arc;
 
     fn item(name: &str, is_dir: bool, size: u64, attrs: u32) -> Item {
         Item {
             name: name.into(),
-            parent: Arc::from(r"C:\data"),
+            native_name: None,
+            parent: Arc::from(Path::new(r"C:\data")),
             is_dir,
             attrs,
             times: Times::default(),

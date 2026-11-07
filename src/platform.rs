@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::mem::{size_of, transmute, zeroed};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
@@ -424,9 +424,15 @@ pub fn show_properties(path: &Path) -> bool {
     shell_execute("properties", path, SEE_MASK_INVOKEIDLIST)
 }
 
+fn reveal_argument(path: &Path) -> OsString {
+    let mut argument = OsString::from("/select,\"");
+    argument.push(path);
+    argument.push("\"");
+    argument
+}
+
 pub fn reveal_in_explorer(path: &Path) {
-    let argument = format!("/select,\"{}\"", path.display());
-    let _ = Command::new("explorer.exe").raw_arg(argument).spawn();
+    let _ = Command::new("explorer.exe").raw_arg(reveal_argument(path)).spawn();
 }
 
 pub fn active_window() -> usize {
@@ -518,7 +524,7 @@ fn wide_bytes(units: &[u16]) -> impl Iterator<Item = u8> {
     units.iter().flat_map(|unit| unit.to_le_bytes())
 }
 
-pub fn copy_text(text: &str) -> bool {
+pub fn copy_text(text: impl AsRef<OsStr>) -> bool {
     let bytes: Vec<u8> = wide_bytes(&wide(text)).collect();
     set_clipboard(&[(CF_UNICODETEXT as u32, &bytes)])
 }
@@ -672,6 +678,13 @@ mod tests {
         assert!(local_day_start("2024-13-40").is_none());
         assert!(local_day_start("yesterday").is_none());
         assert!(local_day_start("2024-03").is_none());
+    }
+
+    #[test]
+    fn reveal_keeps_names_that_are_not_valid_unicode() {
+        let name = OsString::from_wide(&[0x61, 0xD800]);
+        let units: Vec<u16> = reveal_argument(&Path::new(r"C:\data").join(&name)).encode_wide().collect();
+        assert!(units.contains(&0xD800));
     }
 
     #[test]

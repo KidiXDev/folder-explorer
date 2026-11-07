@@ -4,7 +4,9 @@ use crate::platform;
 use crate::scan::{DirNode, FileEntry, Times};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 
 const TICKS_PER_DAY: u64 = 864_000_000_000;
@@ -96,29 +98,25 @@ pub fn extension_of(name: &str) -> String {
     }
 }
 
-fn join(parent: &str, name: &str) -> String {
-    if parent.ends_with('\\') { format!("{parent}{name}") } else { format!("{parent}\\{name}") }
-}
-
-pub fn search(node: &DirNode, path: &str, query: &Query) -> Vec<Item> {
-    let parent: Arc<str> = path.into();
+pub fn search(node: &DirNode, path: &Path, query: &Query) -> Vec<Item> {
+    let parent: Arc<Path> = path.into();
     let mut hits: Vec<Item> = node
         .files()
-        .filter(|(name, entry)| query.matches_file(name, entry))
+        .filter(|(name, entry)| query.matches_file(&name.to_string_lossy(), entry))
         .map(|(name, entry)| Item::file(name, entry, &parent))
         .collect();
     if !query.files_only() {
         hits.extend(
             node.children
                 .iter()
-                .filter(|child| query.matches_name(&child.name))
+                .filter(|child| query.matches_name(&child.name.to_string_lossy()))
                 .map(|child| Item::folder(child, &parent)),
         );
     }
     let nested: Vec<Item> = node
         .children
         .par_iter()
-        .flat_map_iter(|child| search(child, &join(path, &child.name), query))
+        .flat_map_iter(|child| search(child, &path.join(&*child.name), query))
         .collect();
     hits.extend(nested);
     hits
@@ -138,7 +136,7 @@ pub struct SummaryEntry {
     pub files: u64,
     pub size: u64,
     pub filter: Query,
-    pub folder: Option<String>,
+    pub folder: Option<OsString>,
 }
 
 impl SummaryEntry {
@@ -164,7 +162,7 @@ fn tally<K: Eq + std::hash::Hash + Send>(
         .par_iter()
         .fold(HashMap::new, |mut totals: HashMap<K, (u64, u64)>, dir| {
             for (name, entry) in dir.files().filter(|(_, entry)| !entry.is_folder_link()) {
-                let total = totals.entry(key_of(name, entry)).or_default();
+                let total = totals.entry(key_of(&name.to_string_lossy(), entry)).or_default();
                 total.0 += 1;
                 total.1 += entry.size;
             }
@@ -225,22 +223,22 @@ pub fn summarize(node: &DirNode, kind: SummaryKind) -> Vec<SummaryEntry> {
                 .children
                 .iter()
                 .filter(|child| child.size > 0 || child.file_count > 0)
-                .map(|child| SummaryEntry {
-                    label: child.name.to_string(),
-                    files: child.file_count,
-                    size: child.size,
-                    filter: Query::new(&child.name),
-                    folder: Some(child.name.to_string()),
+                .map(|child| {
+                    let label = child.name.to_string_lossy().into_owned();
+                    SummaryEntry {
+                        files: child.file_count,
+                        size: child.size,
+                        filter: Query::new(&label),
+                        folder: Some(child.name.to_os_string()),
+                        label,
+                    }
                 })
                 .collect();
             let direct_files: Vec<_> = node.files().filter(|(_, entry)| !entry.is_folder_link()).collect();
             if entries.is_empty() {
-                entries.extend(direct_files.into_iter().map(|(name, entry)| SummaryEntry {
-                    label: name.to_string(),
-                    files: 1,
-                    size: entry.size,
-                    filter: Query::new(name),
-                    folder: None,
+                entries.extend(direct_files.into_iter().map(|(name, entry)| {
+                    let label = name.to_string_lossy().into_owned();
+                    SummaryEntry { files: 1, size: entry.size, filter: Query::new(&label), folder: None, label }
                 }));
             } else if !direct_files.is_empty() {
                 let files = direct_files.len() as u64;
@@ -282,6 +280,7 @@ mod tests {
     use super::*;
     use crate::scan::tests::{TempTree, scan};
     use std::fs;
+    use std::os::windows::ffi::OsStringExt;
     use std::process::Command;
 
     fn sample() -> TempTree {
@@ -300,7 +299,7 @@ mod tests {
     }
 
     fn run(tree: &TempTree, query: &Query) -> Vec<Item> {
-        search(&scan(&tree.0), &tree.0.to_string_lossy(), query)
+        search(&scan(&tree.0), &tree.0, query)
     }
 
     #[test]
@@ -331,6 +330,36 @@ mod tests {
     }
 
     #[test]
+    fn hits_reach_the_exact_file_when_names_are_not_valid_unicode() {
+        let tree = TempTree::new();
+        let names = [OsString::from_wide(&[0x61, 0xD800]), OsString::from_wide(&[0x61, 0xD801])];
+        for (index, name) in names.iter().enumerate() {
+            let folder = tree.0.join(name);
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join(&names[1 - index]), vec![0; index + 1]).unwrap();
+        }
+        let hits = run(&tree, &Query::new("a"));
+        assert_eq!(hits.len(), 4);
+        for hit in hits.iter().filter(|hit| !hit.is_dir) {
+            assert_eq!(fs::metadata(hit.path()).unwrap().len(), hit.size);
+        }
+        let folders: Vec<_> = hits.iter().filter(|hit| hit.is_dir).map(Item::path).collect();
+        assert!(folders.iter().all(|folder| folder.is_dir()));
+        assert_ne!(folders[0], folders[1]);
+    }
+
+    #[test]
+    fn folder_rows_keep_the_exact_name_for_opening() {
+        let tree = TempTree::new();
+        let name = OsString::from_wide(&[0x61, 0xD800]);
+        tree.file("seed.txt", 1);
+        fs::create_dir(tree.0.join(&name)).unwrap();
+        fs::write(tree.0.join(&name).join("inside.txt"), [0]).unwrap();
+        let summary = summarize(&scan(&tree.0), SummaryKind::Folders);
+        assert!(summary.iter().any(|row| row.folder.as_ref() == Some(&name)));
+    }
+
+    #[test]
     fn size_filters_return_files_only() {
         let tree = sample();
         let query = Query { size: Some(100..u64::MAX), ..Query::default() };
@@ -355,7 +384,7 @@ mod tests {
         assert!(made.status.success());
         let node = scan(&tree.0);
         let everything = Query { size: Some(0..u64::MAX), ..Query::default() };
-        assert_eq!(search(&node, &tree.0.to_string_lossy(), &everything).len(), 5);
+        assert_eq!(search(&node, &tree.0, &everything).len(), 5);
         let counted: u64 = summarize(&node, SummaryKind::Extension).iter().map(|row| row.files).sum();
         assert_eq!(counted, 5);
         assert_eq!(names(run(&tree, &Query::new("link"))), ["link"]);
@@ -399,7 +428,7 @@ mod tests {
         let node = scan(&tree.0);
         for kind in [SummaryKind::Extension, SummaryKind::Age(DateField::Modified)] {
             for row in summarize(&node, kind) {
-                let hits = search(&node, &tree.0.to_string_lossy(), &row.filter);
+                let hits = search(&node, &tree.0, &row.filter);
                 assert_eq!(hits.len() as u64, row.files, "{}", row.label);
             }
         }
