@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.92"
 description = "A fast file explorer that shows the real size of every folder"
 license = "MIT"
+authors = ["KidiXDev"]
+repository = "https://github.com/KidiXDev/folder-explorer"
+homepage = "https://github.com/KidiXDev/folder-explorer"
 keywords = ["explorer", "disk-usage", "folder-size", "slint"]
 categories = ["filesystem", "gui"]
 
@@ -43,6 +46,15 @@ windows-sys = { version = "0.61", features = [
 
 [build-dependencies]
 slint-build = "1.18"
+winresource = "0.1"
+
+[package.metadata.winresource]
+ProductName = "Folder Explorer"
+FileDescription = "Folder Explorer"
+CompanyName = "KidiXDev"
+LegalCopyright = "Copyright (c) 2026 KidiXDev"
+OriginalFilename = "folder-explorer.exe"
+InternalName = "folder-explorer"
 
 [profile.release]
 codegen-units = 1
