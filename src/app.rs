@@ -639,7 +639,7 @@ impl App {
             query.size = Some(if ui.get_size_rule() == 0 { bytes + 1..u64::MAX } else { 0..bytes });
         }
         if ui.get_date_enabled()
-            && let Some(day) = platform::local_day_start(&ui.get_date_text())
+            && let Some(day) = platform::local_day(&ui.get_date_text())
         {
             let field = DATE_FIELDS[ui.get_date_field() as usize];
             let rule = DATE_RULES[ui.get_date_rule() as usize];

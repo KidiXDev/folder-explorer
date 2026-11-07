@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::mem::{size_of, transmute, zeroed};
+use std::ops::Range;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::process::CommandExt;
 use std::io;
@@ -37,7 +38,8 @@ use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 use windows_sys::Win32::System::Time::{
-    FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime, TzSpecificLocalTimeToSystemTime,
+    FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime, TIME_ZONE_INFORMATION,
+    TzSpecificLocalTimeToSystemTime,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows_sys::Win32::UI::Controls::MARGINS;
@@ -61,6 +63,7 @@ const APPCOMMAND_BROWSER_BACKWARD: u32 = 1;
 const APPCOMMAND_BROWSER_FORWARD: u32 = 2;
 
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+const TICKS_PER_DAY: u64 = 864_000_000_000;
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_REMOTE: u32 = 4;
 const DRIVE_CDROM: u32 = 5;
@@ -103,17 +106,34 @@ pub fn format_time(ticks: u64) -> String {
     )
 }
 
-pub fn local_day_start(text: &str) -> Option<u64> {
+fn system_time_ticks(time: &SYSTEMTIME) -> Option<u64> {
+    let mut filetime: FILETIME = unsafe { zeroed() };
+    let converted = unsafe { SystemTimeToFileTime(time, &mut filetime) != 0 };
+    converted.then_some((filetime.dwHighDateTime as u64) << 32 | filetime.dwLowDateTime as u64)
+}
+
+fn local_ticks(local: &SYSTEMTIME, zone: *const TIME_ZONE_INFORMATION) -> Option<u64> {
+    let mut utc: SYSTEMTIME = unsafe { zeroed() };
+    let converted = unsafe { TzSpecificLocalTimeToSystemTime(zone, local, &mut utc) != 0 };
+    converted.then(|| system_time_ticks(&utc)).flatten()
+}
+
+fn next_date(date: &SYSTEMTIME) -> Option<SYSTEMTIME> {
+    let tomorrow = to_filetime(system_time_ticks(date)? + TICKS_PER_DAY);
+    let mut next: SYSTEMTIME = unsafe { zeroed() };
+    let converted = unsafe { FileTimeToSystemTime(&tomorrow, &mut next) != 0 };
+    converted.then_some(next)
+}
+
+fn day_bounds(text: &str, zone: *const TIME_ZONE_INFORMATION) -> Option<Range<u64>> {
     let mut parts = text.trim().splitn(3, '-').map(|part| part.parse::<u16>().ok());
     let (year, month, day) = (parts.next()??, parts.next()??, parts.next()??);
-    let local = SYSTEMTIME { wYear: year, wMonth: month, wDay: day, ..unsafe { zeroed() } };
-    let mut utc: SYSTEMTIME = unsafe { zeroed() };
-    let mut filetime: FILETIME = unsafe { zeroed() };
-    let converted = unsafe {
-        TzSpecificLocalTimeToSystemTime(null(), &local, &mut utc) != 0
-            && SystemTimeToFileTime(&utc, &mut filetime) != 0
-    };
-    converted.then_some((filetime.dwHighDateTime as u64) << 32 | filetime.dwLowDateTime as u64)
+    let date = SYSTEMTIME { wYear: year, wMonth: month, wDay: day, ..unsafe { zeroed() } };
+    Some(local_ticks(&date, zone)?..local_ticks(&next_date(&date)?, zone)?)
+}
+
+pub fn local_day(text: &str) -> Option<Range<u64>> {
+    day_bounds(text, null())
 }
 
 pub fn allow_dark_menus() {
@@ -671,17 +691,47 @@ pub fn save_dialog(title: &str, file_name: &str, filters: &[(&str, &str)]) -> Op
 mod tests {
     use super::*;
 
+    fn berlin() -> TIME_ZONE_INFORMATION {
+        let last_sunday = |month, hour| SYSTEMTIME { wMonth: month, wDay: 5, wHour: hour, ..unsafe { zeroed() } };
+        TIME_ZONE_INFORMATION {
+            Bias: -60,
+            StandardDate: last_sunday(10, 3),
+            DaylightDate: last_sunday(3, 2),
+            DaylightBias: -60,
+            ..unsafe { zeroed() }
+        }
+    }
+
+    fn berlin_day_hours(text: &str) -> u64 {
+        let day = day_bounds(text, &berlin()).unwrap();
+        (day.end - day.start) / (TICKS_PER_DAY / 24)
+    }
+
+    #[test]
+    fn days_end_at_the_next_local_midnight_across_clock_changes() {
+        assert_eq!(berlin_day_hours("2026-03-29"), 23);
+        assert_eq!(berlin_day_hours("2026-10-25"), 25);
+        assert_eq!(berlin_day_hours("2026-06-15"), 24);
+    }
+
+    #[test]
+    fn a_day_ends_where_the_next_one_starts_across_a_month_end() {
+        let zone = berlin();
+        assert_eq!(day_bounds("2026-01-31", &zone).unwrap().end, day_bounds("2026-02-01", &zone).unwrap().start);
+    }
+
     #[test]
     fn times_round_trip_through_a_local_day() {
-        let start = local_day_start("2024-03-15").unwrap();
-        assert_eq!(format_time(start), "2024-03-15 00:00");
+        let day = local_day("2024-03-15").unwrap();
+        assert_eq!(format_time(day.start), "2024-03-15 00:00");
+        assert_eq!(format_time(day.end), "2024-03-16 00:00");
     }
 
     #[test]
     fn impossible_dates_are_rejected() {
-        assert!(local_day_start("2024-13-40").is_none());
-        assert!(local_day_start("yesterday").is_none());
-        assert!(local_day_start("2024-03").is_none());
+        assert!(local_day("2024-13-40").is_none());
+        assert!(local_day("yesterday").is_none());
+        assert!(local_day("2024-03").is_none());
     }
 
     #[test]
@@ -705,7 +755,7 @@ mod tests {
 
     #[test]
     fn now_is_after_2020() {
-        assert!(now_filetime() > local_day_start("2020-01-01").unwrap());
+        assert!(now_filetime() > local_day("2020-01-01").unwrap().start);
     }
 
     #[test]

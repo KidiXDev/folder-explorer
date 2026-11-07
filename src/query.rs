@@ -9,7 +9,6 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
-const TICKS_PER_DAY: u64 = 864_000_000_000;
 const TICKS_PER_MONTH: u64 = 26_300_160_000_000;
 const AGE_MONTHS: [u64; 23] =
     [0, 1, 2, 3, 6, 9, 12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168, 180, 192, 204];
@@ -39,12 +38,11 @@ pub enum DateRule {
     On,
 }
 
-pub fn date_range(day_start: u64, rule: DateRule) -> Range<u64> {
-    let next_day = day_start + TICKS_PER_DAY;
+pub fn date_range(day: Range<u64>, rule: DateRule) -> Range<u64> {
     match rule {
-        DateRule::After => next_day..u64::MAX,
-        DateRule::Before => 0..day_start,
-        DateRule::On => day_start..next_day,
+        DateRule::After => day.end..u64::MAX,
+        DateRule::Before => 0..day.start,
+        DateRule::On => day,
     }
 }
 
@@ -283,6 +281,8 @@ mod tests {
     use std::os::windows::ffi::OsStringExt;
     use std::process::Command;
 
+    const TICKS_PER_DAY: u64 = 864_000_000_000;
+
     fn sample() -> TempTree {
         let tree = TempTree::new();
         tree.file("Readme.TXT", 10)
@@ -392,13 +392,22 @@ mod tests {
 
     #[test]
     fn date_rules_treat_a_day_as_a_whole() {
-        let day = 1_000 * TICKS_PER_DAY;
-        assert!(date_range(day, DateRule::On).contains(&(day + 5)));
-        assert!(!date_range(day, DateRule::On).contains(&(day + TICKS_PER_DAY)));
-        assert!(date_range(day, DateRule::After).contains(&(day + TICKS_PER_DAY)));
-        assert!(!date_range(day, DateRule::After).contains(&(day + 5)));
-        assert!(date_range(day, DateRule::Before).contains(&(day - 1)));
-        assert!(!date_range(day, DateRule::Before).contains(&day));
+        let start = 1_000 * TICKS_PER_DAY;
+        let day = start..start + TICKS_PER_DAY;
+        assert!(date_range(day.clone(), DateRule::On).contains(&(start + 5)));
+        assert!(!date_range(day.clone(), DateRule::On).contains(&day.end));
+        assert!(date_range(day.clone(), DateRule::After).contains(&day.end));
+        assert!(!date_range(day.clone(), DateRule::After).contains(&(start + 5)));
+        assert!(date_range(day.clone(), DateRule::Before).contains(&(start - 1)));
+        assert!(!date_range(day, DateRule::Before).contains(&start));
+    }
+
+    #[test]
+    fn date_rules_use_the_end_of_the_day_they_are_given() {
+        let start = 1_000 * TICKS_PER_DAY;
+        let short_day = start..start + TICKS_PER_DAY / 24 * 23;
+        assert_eq!(date_range(short_day.clone(), DateRule::After).start, short_day.end);
+        assert_eq!(date_range(short_day.clone(), DateRule::On), short_day);
     }
 
     #[test]
