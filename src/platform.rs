@@ -8,6 +8,16 @@ use std::process::Command;
 use std::ptr::{copy_nonoverlapping, null, null_mut};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use windows::Win32::Storage::EnhancedStorage::PKEY_Home_IsPinned;
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
+use windows::Win32::System::SystemServices::SFGAO_FOLDER;
+use windows::Win32::UI::Shell::{
+    BHID_EnumItems, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN, SIGDN_FILESYSPATH,
+    SIGDN_NORMALDISPLAY,
+};
+use windows::core::{HSTRING, Interface};
 use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, MAX_PATH, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, MoveFileW,
@@ -34,6 +44,8 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO, MessageBoxW, SW_SHOWNORMAL,
 };
+
+pub const QUICK_ACCESS: &str = "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
 
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
 const DRIVE_REMOVABLE: u32 = 2;
@@ -172,6 +184,50 @@ pub fn drives() -> Vec<Drive> {
         let queries: Vec<_> = letters.iter().map(|letter| scope.spawn(|| describe_drive(*letter))).collect();
         queries.into_iter().filter_map(|query| query.join().ok()).collect()
     })
+}
+
+unsafe fn shell_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
+    unsafe {
+        let name = item.GetDisplayName(kind).ok()?;
+        let text = name.to_string().ok();
+        CoTaskMemFree(Some(name.0.cast()));
+        text
+    }
+}
+
+unsafe fn pinned_folder(item: &IShellItem) -> Option<(PathBuf, String)> {
+    unsafe {
+        let properties: IShellItem2 = item.cast().ok()?;
+        let pinned = properties.GetBool(&PKEY_Home_IsPinned).ok()?.as_bool();
+        if !pinned || item.GetAttributes(SFGAO_FOLDER).ok()? != SFGAO_FOLDER {
+            return None;
+        }
+        Some((PathBuf::from(shell_name(item, SIGDN_FILESYSPATH)?), shell_name(item, SIGDN_NORMALDISPLAY)?))
+    }
+}
+
+unsafe fn enumerate_pins() -> windows::core::Result<Vec<(PathBuf, String)>> {
+    unsafe {
+        let quick_access: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(QUICK_ACCESS), None)?;
+        let items: IEnumShellItems = quick_access.BindToHandler(None, &BHID_EnumItems)?;
+        let next = || {
+            let mut item = [None];
+            items.Next(&mut item, None).ok()?;
+            item[0].take()
+        };
+        Ok(std::iter::from_fn(next).filter_map(|item| pinned_folder(&item)).collect())
+    }
+}
+
+pub fn quick_access_pins() -> Vec<(PathBuf, String)> {
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+        let pins = enumerate_pins().unwrap_or_default();
+        if initialized {
+            CoUninitialize();
+        }
+        pins
+    }
 }
 
 fn shell_execute(verb: &str, path: &Path, mask: u32) -> bool {
@@ -460,6 +516,13 @@ mod tests {
         let usage = disk_usage(Path::new(r"C:\")).unwrap();
         assert!(usage.total > 0 && usage.free <= usage.total);
         assert!((0.0..=1.0).contains(&usage.used_ratio()));
+    }
+
+    #[test]
+    fn quick_access_opens_and_lists_named_absolute_paths() {
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let pins = unsafe { enumerate_pins() }.unwrap();
+        assert!(pins.iter().all(|(path, name)| path.is_absolute() && !name.is_empty()));
     }
 
     #[test]

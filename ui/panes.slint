@@ -5,21 +5,31 @@ import { DimLabel, EmptyState, IconButton, Label, UsageBar } from "controls.slin
 
 component TreeItem {
     in property <TreeRow> data;
+    in property <bool> separated;
     callback opened();
     callback toggled();
 
     property <bool> appeared: false;
+    property <length> gap: root.separated ? 11px : 0px;
     init => { root.appeared = true; }
 
-    height: Theme.row-height;
+    height: Theme.row-height + root.gap;
     opacity: root.appeared ? 1 : 0;
     animate opacity { duration: 150ms; easing: ease-out; }
 
+    if root.separated: Rectangle {
+        x: 12px;
+        y: 5px;
+        width: root.width - 24px;
+        height: 1px;
+        background: Theme.line;
+    }
+
     Rectangle {
         x: 6px;
-        y: 1px;
+        y: root.gap + 1px;
         width: root.width - 12px;
-        height: parent.height - 2px;
+        height: Theme.row-height - 2px;
         border-radius: Theme.radius;
         border-width: root.data.selected ? 1px : 0px;
         border-color: Theme.selected-border;
@@ -32,7 +42,7 @@ component TreeItem {
 
     Rectangle {
         x: 6px;
-        y: (parent.height - self.height) / 2;
+        y: root.gap + (Theme.row-height - self.height) / 2;
         width: 3px;
         height: root.data.selected ? 15px : 0px;
         border-radius: 1.5px;
@@ -43,10 +53,14 @@ component TreeItem {
     }
 
     open := TouchArea {
+        y: root.gap;
+        height: Theme.row-height;
         clicked => { root.opened(); }
     }
 
     HorizontalLayout {
+        y: root.gap;
+        height: Theme.row-height;
         padding-left: (root.appeared ? 10px : 4px) + root.data.depth * 14px;
         padding-right: 10px;
         spacing: 6px;
@@ -87,7 +101,7 @@ component TreeItem {
                 : root.data.kind == 1 ? @image-url("icons/drive.svg")
                 : @image-url("icons/folder.svg");
             colorize: root.data.icon.width > 0 ? transparent
-                : root.data.kind == 2 ? Theme.folder
+                : root.data.kind == 2 || root.data.kind == 3 ? Theme.folder
                 : root.data.selected ? Theme.accent
                 : Theme.text-dim;
         }
@@ -124,6 +138,7 @@ export component Sidebar {
 
             for row[index] in root.rows: TreeItem {
                 data: row;
+                separated: index > 0 && row.kind == 0;
                 opened => { root.opened(index); }
                 toggled => { root.toggled(index); }
             }

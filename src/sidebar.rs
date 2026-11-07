@@ -1,6 +1,6 @@
 use crate::icons::{IconStore, THIS_PC};
 use crate::item::compare_text;
-use crate::platform::Drive;
+use crate::platform::{Drive, QUICK_ACCESS};
 use crate::ui::TreeRow;
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 use std::cell::Cell;
@@ -11,6 +11,8 @@ use std::rc::Rc;
 const KIND_COMPUTER: i32 = 0;
 const KIND_DRIVE: i32 = 1;
 const KIND_FOLDER: i32 = 2;
+const KIND_PIN: i32 = 3;
+const KIND_QUICK_ACCESS: i32 = 4;
 const ICON_SIZE: u32 = 16;
 
 struct Node {
@@ -25,6 +27,9 @@ struct Node {
 
 pub struct Sidebar {
     nodes: Vec<Node>,
+    root: usize,
+    pins: Vec<(PathBuf, String)>,
+    quick_access_closed: bool,
     drives: Vec<(PathBuf, String)>,
     closed: HashSet<PathBuf>,
     computer_closed: bool,
@@ -50,6 +55,9 @@ impl Sidebar {
         };
         let sidebar = Self {
             nodes: vec![computer],
+            root: 0,
+            pins: Vec::new(),
+            quick_access_closed: false,
             drives: Vec::new(),
             closed: HashSet::new(),
             computer_closed: false,
@@ -89,8 +97,11 @@ impl Sidebar {
 
     fn icon(&self, node: &Node) -> Image {
         let icon = match &node.path {
+            None if node.kind == KIND_QUICK_ACCESS => self.icons.location_icon(QUICK_ACCESS, ICON_SIZE),
             None => self.icons.location_icon(THIS_PC, ICON_SIZE),
-            Some(path) if node.kind == KIND_DRIVE => self.icons.location_icon(&path.to_string_lossy(), ICON_SIZE),
+            Some(path) if matches!(node.kind, KIND_DRIVE | KIND_PIN) => {
+                self.icons.location_icon(&path.to_string_lossy(), ICON_SIZE)
+            }
             Some(path) => self.icons.folder_icon(path, node.attrs, ICON_SIZE),
         };
         if icon.is_none() {
@@ -101,13 +112,16 @@ impl Sidebar {
 
     fn selected_row(&self) -> Option<usize> {
         if self.computer_selected {
-            return Some(0);
+            return Some(self.root);
         }
         let selected = self.selected.as_ref()?;
-        if self.computer_closed {
-            return Some(0);
+        if let Some(pin) = (0..self.root).find(|&row| self.nodes[row].path.as_ref() == Some(selected)) {
+            return Some(pin);
         }
-        (0..self.nodes.len())
+        if self.computer_closed {
+            return Some(self.root);
+        }
+        (self.root..self.nodes.len())
             .filter(|&row| self.nodes[row].path.as_ref().is_some_and(|path| selected.starts_with(path)))
             .max_by_key(|&row| self.nodes[row].depth)
     }
@@ -115,10 +129,10 @@ impl Sidebar {
     fn row(&self, index: usize) -> TreeRow {
         let node = &self.nodes[index];
         let selected = self.selected_row() == Some(index);
-        let has_children = if node.kind == KIND_COMPUTER {
-            !self.drives.is_empty()
-        } else {
-            self.nodes.get(index + 1).is_some_and(|next| next.depth > node.depth)
+        let has_children = match node.kind {
+            KIND_COMPUTER => !self.drives.is_empty(),
+            KIND_QUICK_ACCESS => true,
+            _ => self.nodes.get(index + 1).is_some_and(|next| next.depth > node.depth),
         };
         TreeRow {
             name: SharedString::from(&node.name),
@@ -131,11 +145,46 @@ impl Sidebar {
         }
     }
 
+    pub fn set_pins(&mut self, pins: Vec<(PathBuf, String)>) {
+        if self.pins != pins {
+            self.pins = pins;
+            self.show_pins();
+            self.scroll_pending = true;
+        }
+    }
+
+    fn show_pins(&mut self) {
+        let header = (!self.pins.is_empty()).then(|| Node {
+            path: None,
+            name: "Quick access".into(),
+            depth: 0,
+            kind: KIND_QUICK_ACCESS,
+            attrs: 0,
+            expanded: !self.quick_access_closed,
+            loaded: true,
+        });
+        let shown: &[(PathBuf, String)] = if self.quick_access_closed { &[] } else { &self.pins };
+        let pins = shown.iter().map(|(path, name)| Node {
+            path: Some(path.clone()),
+            name: name.clone(),
+            depth: 1,
+            kind: KIND_PIN,
+            attrs: 0,
+            expanded: false,
+            loaded: true,
+        });
+        let rows: Vec<Node> = header.into_iter().chain(pins).collect();
+        let root = rows.len();
+        self.nodes.splice(..self.root, rows);
+        self.root = root;
+        self.sync();
+    }
+
     pub fn set_drives(&mut self, drives: &[Drive]) -> Option<PathBuf> {
         self.drives = drives.iter().map(|drive| (drive.root.clone(), drive.title.clone())).collect();
-        self.nodes.retain(|node| node.kind == KIND_COMPUTER);
+        self.nodes.truncate(self.root + 1);
         if !self.computer_closed {
-            self.nodes[0].expanded = true;
+            self.nodes[self.root].expanded = true;
             self.nodes.extend(self.drives.iter().map(|(root, title)| Node {
                 path: Some(root.clone()),
                 name: title.clone(),
@@ -146,7 +195,7 @@ impl Sidebar {
                 loaded: false,
             }));
         } else {
-            self.nodes[0].expanded = false;
+            self.nodes[self.root].expanded = false;
         }
         let request = self.advance();
         self.sync();
@@ -161,11 +210,16 @@ impl Sidebar {
     }
 
     pub fn path_at(&self, row: usize) -> Option<Option<PathBuf>> {
-        self.nodes.get(row).map(|node| node.path.clone())
+        self.nodes.get(row).filter(|node| node.kind != KIND_QUICK_ACCESS).map(|node| node.path.clone())
     }
 
     pub fn toggle(&mut self, row: usize) -> Option<PathBuf> {
         let node = self.nodes.get(row)?;
+        if node.kind == KIND_QUICK_ACCESS {
+            self.quick_access_closed = !self.quick_access_closed;
+            self.show_pins();
+            return None;
+        }
         if node.kind == KIND_COMPUTER {
             self.target = None;
             if node.expanded {
@@ -189,8 +243,9 @@ impl Sidebar {
     }
 
     fn expand_computer(&mut self) {
-        self.nodes[0].expanded = true;
-        self.nodes[0].loaded = true;
+        let root = self.root;
+        self.nodes[root].expanded = true;
+        self.nodes[root].loaded = true;
         let children: Vec<Node> = self
             .drives
             .iter()
@@ -206,10 +261,10 @@ impl Sidebar {
             .collect();
         let count = children.len();
         let synced = self.model.row_count() == self.nodes.len();
-        self.nodes.splice(1..1, children);
+        self.nodes.splice(root + 1..root + 1, children);
         if synced {
-            self.model.set_row_data(0, self.row(0));
-            for index in 1..=count {
+            self.model.set_row_data(root, self.row(root));
+            for index in root + 1..=root + count {
                 self.model.insert(index, self.row(index));
             }
         } else {
@@ -251,7 +306,7 @@ impl Sidebar {
     }
 
     pub fn set_children(&mut self, parent: &Path, mut folders: Vec<(String, u32)>) -> Option<PathBuf> {
-        let Some(row) = self.nodes.iter().position(|node| node.path.as_deref() == Some(parent)) else {
+        let Some(row) = (self.root..self.nodes.len()).find(|&row| self.nodes[row].path.as_deref() == Some(parent)) else {
             return self.advance();
         };
         if self.nodes[row].expanded {
@@ -303,7 +358,7 @@ impl Sidebar {
             return None;
         }
         let target = self.target.clone()?;
-        let row = (0..self.nodes.len())
+        let row = (self.root..self.nodes.len())
             .filter(|row| self.nodes[*row].path.as_ref().is_some_and(|path| target.starts_with(path)))
             .max_by_key(|row| self.nodes[*row].depth)?;
         let node = &self.nodes[row];
@@ -328,6 +383,80 @@ mod tests {
             title: title.into(),
             usage: None,
         }
+    }
+
+    fn sidebar_with_pin(path: &str) -> Sidebar {
+        let mut sidebar = Sidebar::new(IconStore::new());
+        sidebar.set_drives(&[drive(r"C:\", "Acer (C:)")]);
+        sidebar.set_pins(vec![(PathBuf::from(path), "Pinned".into())]);
+        sidebar
+    }
+
+    #[test]
+    fn pins_sit_above_this_pc_and_only_they_open_a_folder() {
+        let sidebar = sidebar_with_pin(r"C:\Users\Me");
+        assert_eq!(sidebar.model().row_count(), 4);
+        assert_eq!(sidebar.path_at(0), None);
+        assert_eq!(sidebar.path_at(1), Some(Some(PathBuf::from(r"C:\Users\Me"))));
+        assert_eq!(sidebar.path_at(2), Some(None));
+        assert_eq!(sidebar.path_at(3), Some(Some(PathBuf::from(r"C:\"))));
+    }
+
+    #[test]
+    fn no_pins_means_no_quick_access_section() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users\Me");
+        sidebar.set_pins(Vec::new());
+        assert_eq!(sidebar.model().row_count(), 2);
+        assert_eq!(sidebar.path_at(0), Some(None));
+    }
+
+    #[test]
+    fn a_pin_does_not_stop_the_tree_expanding_to_the_same_folder() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users\Me");
+        assert_eq!(sidebar.reveal(Some(Path::new(r"C:\Users\Me"))), Some(PathBuf::from(r"C:\")));
+        assert_eq!(
+            sidebar.set_children(Path::new(r"C:\"), vec![("Users".into(), 0)]),
+            Some(PathBuf::from(r"C:\Users"))
+        );
+        assert_eq!(sidebar.set_children(Path::new(r"C:\Users"), vec![("Me".into(), 0)]), None);
+        assert!(sidebar.is_expanded(Path::new(r"C:\Users")));
+    }
+
+    #[test]
+    fn children_of_a_pinned_folder_go_under_the_tree_row_not_the_pin() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users");
+        sidebar.reveal(Some(Path::new(r"C:\Users\Me")));
+        sidebar.set_children(Path::new(r"C:\"), vec![("Users".into(), 0)]);
+        sidebar.set_children(Path::new(r"C:\Users"), vec![("Me".into(), 0)]);
+        assert!(!sidebar.nodes[1].expanded);
+        assert_eq!(sidebar.nodes[2].kind, KIND_COMPUTER);
+        assert_eq!(sidebar.nodes.last().unwrap().depth, 3);
+    }
+
+    #[test]
+    fn a_pinned_folder_highlights_its_pin_and_a_subfolder_highlights_the_tree() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users\Me");
+        sidebar.reveal(Some(Path::new(r"C:\Users\Me")));
+        assert_eq!(sidebar.selected_row(), Some(1));
+        sidebar.reveal(Some(Path::new(r"C:\Users\Me\Documents")));
+        assert_eq!(sidebar.selected_row(), Some(3));
+    }
+
+    #[test]
+    fn quick_access_collapses_and_the_tree_keeps_working() {
+        let mut sidebar = sidebar_with_pin(r"C:\Users\Me");
+        assert_eq!(sidebar.toggle(0), None);
+        assert_eq!(sidebar.model().row_count(), 3);
+        assert_eq!(sidebar.path_at(1), Some(None));
+
+        assert_eq!(sidebar.toggle(1), None);
+        assert_eq!(sidebar.model().row_count(), 2);
+        assert_eq!(sidebar.toggle(1), None);
+        assert_eq!(sidebar.model().row_count(), 3);
+
+        assert_eq!(sidebar.toggle(0), None);
+        assert_eq!(sidebar.model().row_count(), 4);
+        assert_eq!(sidebar.path_at(1), Some(Some(PathBuf::from(r"C:\Users\Me"))));
     }
 
     #[test]

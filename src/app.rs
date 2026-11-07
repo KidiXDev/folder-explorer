@@ -53,6 +53,7 @@ enum Location {
 
 enum Message {
     Drives(Vec<Drive>),
+    Pins(Vec<(PathBuf, String)>),
     TreeChildren { parent: PathBuf, folders: Vec<(String, u32)> },
     Listed { scan: u64, items: Vec<Item>, lives: Arc<Vec<Live>> },
     Unreadable { scan: u64, reason: String },
@@ -322,6 +323,7 @@ impl App {
     fn handle(&mut self, message: Message) {
         match message {
             Message::Drives(drives) => self.on_drives(drives),
+            Message::Pins(pins) => self.on_pins(pins),
             Message::TreeChildren { parent, folders } => {
                 let next = self.sidebar.set_children(&parent, folders);
                 self.load_tree_children(next);
@@ -472,6 +474,7 @@ impl App {
         if let Location::Folder(path) = self.location.clone() {
             self.forget(&path);
         }
+        self.load_pins();
         self.reload();
     }
 
@@ -983,6 +986,17 @@ impl App {
         self.show_drives();
     }
 
+    fn load_pins(&mut self) {
+        self.spawn(|sender| {
+            let _ = sender.send(Message::Pins(platform::quick_access_pins()));
+        });
+    }
+
+    fn on_pins(&mut self, pins: Vec<(PathBuf, String)>) {
+        self.sidebar.set_pins(pins);
+        self.scroll_sidebar();
+    }
+
     fn scroll_sidebar(&mut self) {
         if let Some(row) = self.sidebar.take_scroll_row() {
             self.ui().invoke_reveal_tree_row(row as i32);
@@ -1024,8 +1038,9 @@ impl App {
     }
 
     fn tree_opened(&mut self, row: usize) {
-        if let Some(path) = self.sidebar.path_at(row) {
-            self.go(path.map_or(Location::Computer, Location::Folder));
+        match self.sidebar.path_at(row) {
+            Some(path) => self.go(path.map_or(Location::Computer, Location::Folder)),
+            None => self.tree_toggled(row),
         }
     }
 
@@ -1492,6 +1507,7 @@ pub fn run(start: Option<PathBuf>) -> Result<(), slint::PlatformError> {
         ui.set_rows(ModelRc::from(app.list.clone() as Rc<dyn slint::Model<Data = _>>));
         ui.set_tree_rows(app.sidebar.model());
         app.load_drives();
+        app.load_pins();
         match start {
             Some(path) => app.location = Location::Folder(normalize(&path.to_string_lossy())),
             None => app.location = Location::Computer,
