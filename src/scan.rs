@@ -5,8 +5,8 @@ use std::fs;
 use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
 
 const MAX_LOGGED_ERRORS: usize = 10_000;
 const ATTR_DIRECTORY: u32 = 0x10;
@@ -55,6 +55,7 @@ pub struct DirNode {
     pub children: Vec<Arc<DirNode>>,
     pub entries: Vec<FileEntry>,
     names: Vec<u8>,
+    errors: Vec<Box<str>>,
 }
 
 impl DirNode {
@@ -71,6 +72,7 @@ impl DirNode {
             children: Vec::new(),
             entries: Vec::new(),
             names: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -93,6 +95,22 @@ impl DirNode {
 
     fn add_link(&mut self, name: &OsStr, meta: &fs::Metadata) {
         self.push_entry(name, meta);
+    }
+
+    fn record_error(&mut self, error: &io::Error) {
+        let text = error.to_string();
+        self.errors.push(text.split(" (os error").next().unwrap_or(&text).into());
+        self.error_count += 1;
+    }
+
+    pub fn collect_errors(&self, path: &Path, into: &mut Vec<ScanError>) {
+        let room = MAX_LOGGED_ERRORS.saturating_sub(into.len());
+        into.extend(
+            self.errors.iter().take(room).map(|message| ScanError { path: path.to_path_buf(), message: message.to_string() }),
+        );
+        for child in self.children.iter().filter(|child| child.error_count > 0) {
+            child.collect_errors(&path.join(&*child.name), into);
+        }
     }
 
     pub fn absorb(&mut self, children: Vec<Arc<DirNode>>) {
@@ -129,6 +147,7 @@ impl DirNode {
             children: self.children.clone(),
             entries: self.entries.clone(),
             names: self.names.clone(),
+            errors: self.errors.clone(),
         }
     }
 
@@ -167,24 +186,6 @@ pub struct ScanError {
     pub message: String,
 }
 
-#[derive(Default)]
-pub struct ErrorLog(Mutex<Vec<ScanError>>);
-
-impl ErrorLog {
-    fn record(&self, path: &Path, error: &io::Error) {
-        let mut errors = self.0.lock().unwrap();
-        if errors.len() < MAX_LOGGED_ERRORS {
-            let text = error.to_string();
-            let message = text.split(" (os error").next().unwrap_or(&text).to_string();
-            errors.push(ScanError { path: path.to_path_buf(), message });
-        }
-    }
-
-    pub fn into_inner(self) -> Vec<ScanError> {
-        self.0.into_inner().unwrap()
-    }
-}
-
 pub struct Level {
     pub node: DirNode,
     pub subdirs: Vec<SubDir>,
@@ -196,7 +197,7 @@ fn is_link(entry: &fs::DirEntry, file_type: fs::FileType, attrs: u32) -> bool {
             && fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-pub fn read_level(dir: &SubDir, errors: &ErrorLog) -> Result<Level, io::Error> {
+pub fn read_level(dir: &SubDir) -> Result<Level, io::Error> {
     let mut node = DirNode::new(dir);
     let mut subdirs = Vec::new();
     for entry in fs::read_dir(&dir.path)? {
@@ -220,10 +221,7 @@ pub fn read_level(dir: &SubDir, errors: &ErrorLog) -> Result<Level, io::Error> {
                     node.add_file(&name, &meta);
                 }
             }
-            Err(error) => {
-                node.error_count += 1;
-                errors.record(&dir.path, &error);
-            }
+            Err(error) => node.record_error(&error),
         }
     }
     Ok(Level { node, subdirs })
@@ -247,7 +245,6 @@ impl Live {
 pub struct ScanContext {
     pub cancel: Arc<AtomicBool>,
     pub known: HashMap<PathBuf, Arc<DirNode>>,
-    pub errors: ErrorLog,
 }
 
 pub fn scan_tree(dir: &SubDir, context: &ScanContext, live: &Live) -> Arc<DirNode> {
@@ -260,11 +257,10 @@ pub fn scan_tree(dir: &SubDir, context: &ScanContext, live: &Live) -> Arc<DirNod
         unread.complete = false;
         return Arc::new(unread);
     }
-    let Level { mut node, subdirs } = match read_level(dir, &context.errors) {
+    let Level { mut node, subdirs } = match read_level(dir) {
         Ok(level) => level,
         Err(error) => {
-            context.errors.record(&dir.path, &error);
-            unread.error_count = 1;
+            unread.record_error(&error);
             return Arc::new(unread);
         }
     };
@@ -406,7 +402,7 @@ pub mod tests {
     }
 
     fn context() -> ScanContext {
-        ScanContext { cancel: Arc::default(), known: HashMap::new(), errors: ErrorLog::default() }
+        ScanContext { cancel: Arc::default(), known: HashMap::new() }
     }
 
     pub fn scan(path: &Path) -> Arc<DirNode> {
@@ -621,6 +617,35 @@ pub mod tests {
         cache.invalidate(&tree.0);
         cache.store_scan(cache.generation(), &tree.0, &scan(&tree.0));
         assert_eq!(cache.get(&tree.0).unwrap().size, 100);
+    }
+
+    #[test]
+    fn reused_subtrees_keep_their_error_messages() {
+        let tree = sample();
+        let sub = tree.0.join("sub");
+        let dir = SubDir::at(&sub).unwrap();
+        fs::remove_dir_all(&sub).unwrap();
+        let failed = scan_tree(&dir, &context(), &Live::default());
+        fs::create_dir(&sub).unwrap();
+        let mut cache = Cache::default();
+        cache.store(&sub, &failed);
+        let context = ScanContext { known: cache.known_below(&tree.0), ..context() };
+        let node = scan_tree(&SubDir::at(&tree.0).unwrap(), &context, &Live::default());
+        let mut errors = Vec::new();
+        node.collect_errors(&tree.0, &mut errors);
+        assert_eq!(node.error_count, 1);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, sub);
+    }
+
+    #[test]
+    fn logged_errors_stop_at_the_limit() {
+        let mut node = DirNode::new(&subdir("root"));
+        let error = io::Error::from(io::ErrorKind::NotFound);
+        (0..MAX_LOGGED_ERRORS + 5).for_each(|_| node.record_error(&error));
+        let mut errors = Vec::new();
+        node.collect_errors(Path::new(r"C:\root"), &mut errors);
+        assert_eq!(errors.len(), MAX_LOGGED_ERRORS);
     }
 
     #[test]

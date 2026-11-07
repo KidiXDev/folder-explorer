@@ -8,7 +8,7 @@ use crate::item::{ATTR_HIDDEN, Column, Item};
 use crate::list::{ListModel, ListState, View};
 use crate::platform::{self, ClipboardFiles, DiskUsage, Drive};
 use crate::query::{self, DateField, DateRule, Query, SummaryEntry, SummaryKind};
-use crate::scan::{Cache, DirNode, ErrorLog, Level, Live, ScanContext, ScanError, SubDir, read_level, scan_tree};
+use crate::scan::{Cache, DirNode, Level, Live, ScanContext, ScanError, SubDir, read_level, scan_tree};
 use crate::settings::Settings;
 use crate::sidebar::Sidebar;
 use crate::ui::{AppWindow, ColumnChoice, ColumnInfo, Crumb, DriveCard};
@@ -133,12 +133,8 @@ fn scan_folder(
     sender: Sender<Message>,
 ) {
     let started = Instant::now();
-    let listing = SubDir::at(&path).and_then(|root| {
-        let errors = ErrorLog::default();
-        read_level(&root, &errors).map(|level| (level, errors))
-    });
-    let (Level { mut node, subdirs }, errors) = match listing {
-        Ok(listing) => listing,
+    let Level { mut node, subdirs } = match SubDir::at(&path).and_then(|root| read_level(&root)) {
+        Ok(level) => level,
         Err(error) => {
             let _ = sender.send(Message::Unreadable { scan, reason: describe_error(&path, &error) });
             return;
@@ -156,7 +152,7 @@ fn scan_folder(
     let _ = sender.send(Message::Disk { scan, title, usage: platform::disk_usage(&root) });
 
     let from_cache = subdirs.iter().all(|dir| known.contains_key(&dir.path));
-    let context = ScanContext { cancel, known, errors };
+    let context = ScanContext { cancel, known };
     let children = subdirs
         .par_iter()
         .enumerate()
@@ -167,7 +163,8 @@ fn scan_folder(
         })
         .collect();
     node.absorb(children);
-    let errors = context.errors.into_inner();
+    let mut errors = Vec::new();
+    node.collect_errors(&path, &mut errors);
     let seconds = started.elapsed().as_secs_f64();
     let _ = sender.send(Message::Finished { scan, generation, path, node: Arc::new(node), errors, seconds, from_cache });
 }
