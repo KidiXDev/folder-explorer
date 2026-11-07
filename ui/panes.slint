@@ -815,7 +815,7 @@ export component SummaryPane {
                     }
 
                     TouchArea {
-                        mouse-cursor: pointer;
+                        mouse-cursor: tile.index < root.rows.length ? pointer : default;
                         changed has-hover => {
                             if (self.has-hover) {
                                 root.row-hovered(tile.index);
