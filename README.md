@@ -84,6 +84,7 @@ cargo test
 | Ctrl+Shift+N | New folder |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste |
 | Delete | Move to Recycle Bin |
+| Shift+Delete | Delete permanently |
 
 ## Project layout
 

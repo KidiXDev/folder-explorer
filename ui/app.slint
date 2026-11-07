@@ -676,7 +676,7 @@ export component AppWindow inherits Window {
             if (event.text == Key.End) { root.cursor-moved(2147483647, event.modifiers.shift); return accept; }
             if (event.text == Key.Return) { root.action("open"); return accept; }
             if (event.text == Key.Backspace) { root.go-up(); return accept; }
-            if (event.text == Key.Delete) { root.action("delete"); return accept; }
+            if (event.text == Key.Delete) { root.action(event.modifiers.shift ? "delete-permanently" : "delete"); return accept; }
             if (event.modifiers.control && (event.text == "a" || event.text == "A")) { root.action("select-all"); return accept; }
             if (event.modifiers.control && (event.text == "c" || event.text == "C")) { root.action("copy"); return accept; }
             if (!event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) { root.text-typed(event.text); }

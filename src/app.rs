@@ -77,7 +77,7 @@ enum Message {
     Found { search: u64, items: Vec<Item>, seconds: f64 },
     Summary { id: u64, entries: Vec<SummaryEntry> },
     Hashed { run: u64, index: usize, hashes: Option<[String; 4]> },
-    Recycled { paths: Vec<PathBuf>, succeeded: bool },
+    Deleted { paths: Vec<PathBuf>, succeeded: bool },
     Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool, sequence: u32 },
     RecycleBin(Option<u64>),
 }
@@ -380,7 +380,7 @@ impl App {
                 self.show_summary();
             }
             Message::Hashed { run, index, hashes } if run == self.hash_run => self.on_hashed(index, hashes),
-            Message::Recycled { paths, succeeded } => self.on_recycled(&paths, succeeded),
+            Message::Deleted { paths, succeeded } => self.on_deleted(&paths, succeeded),
             Message::Pasted { paths, target, is_cut, succeeded, sequence } => {
                 self.on_pasted(&paths, &target, is_cut, succeeded, sequence);
             }
@@ -1328,23 +1328,26 @@ impl App {
         }
     }
 
-    fn recycle(&mut self, paths: Vec<PathBuf>, owner: usize) {
+    fn delete(&mut self, paths: Vec<PathBuf>, permanently: bool, owner: usize) {
         self.cancel_scan();
         self.spawn(move |sender| {
-            let succeeded = platform::recycle(&paths, owner);
-            let _ = sender.send(Message::Recycled { paths, succeeded });
+            let succeeded = match permanently {
+                true => platform::delete_permanently(&paths, owner),
+                false => platform::recycle(&paths, owner),
+            };
+            let _ = sender.send(Message::Deleted { paths, succeeded });
             let _ = sender.send(Message::RecycleBin(platform::recycle_bin_size()));
         });
     }
 
-    fn on_recycled(&mut self, paths: &[PathBuf], succeeded: bool) {
+    fn on_deleted(&mut self, paths: &[PathBuf], succeeded: bool) {
         for path in paths {
             self.forget(path);
         }
         self.refresh_tree(paths.first().and_then(|path| path.parent()));
         self.reload();
         if !succeeded {
-            self.ui().set_status_activity("Some items could not be moved to the Recycle Bin.".into());
+            self.ui().set_status_activity("Some items could not be deleted.".into());
         }
     }
 
@@ -1395,16 +1398,20 @@ fn activate_row(shared: &Shared, row: usize) {
     }
 }
 
-fn delete_selection(shared: &Shared) {
+fn delete_selection(shared: &Shared, permanently: bool) {
     let owner = platform::active_window();
     let paths = shared.borrow().selected_paths();
-    let question = match paths.as_slice() {
+    let target = match paths.as_slice() {
         [] => return,
-        [path] => format!("Move \"{}\" to the Recycle Bin?", path.display()),
-        many => format!("Move {} to the Recycle Bin?", plural(many.len() as u64, "item")),
+        [path] => format!("\"{}\"", path.display()),
+        many => plural(many.len() as u64, "item"),
     };
-    if platform::confirm("Move to Recycle Bin", &question) {
-        shared.borrow_mut().recycle(paths, owner);
+    let (title, question) = match permanently {
+        true => ("Delete permanently", format!("Permanently delete {target}? This can't be undone.")),
+        false => ("Move to Recycle Bin", format!("Move {target} to the Recycle Bin?")),
+    };
+    if platform::confirm(title, &question) {
+        shared.borrow_mut().delete(paths, permanently, owner);
     }
 }
 
@@ -1468,7 +1475,8 @@ fn export_list(shared: &Shared) {
 fn run_action(shared: &Shared, action: &str) {
     match action {
         "open" => open_selection(shared),
-        "delete" => delete_selection(shared),
+        "delete" => delete_selection(shared, false),
+        "delete-permanently" => delete_selection(shared, true),
         "export" => export_list(shared),
         "new-folder" => new_folder(shared),
         "paste" => paste(shared),

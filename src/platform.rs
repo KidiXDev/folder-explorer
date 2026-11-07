@@ -478,6 +478,10 @@ pub fn recycle(paths: &[PathBuf], owner: usize) -> bool {
     shell_operation(FO_DELETE, paths, None, FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING, owner)
 }
 
+pub fn delete_permanently(paths: &[PathBuf], owner: usize) -> bool {
+    shell_operation(FO_DELETE, paths, None, FOF_NOCONFIRMATION, owner)
+}
+
 pub fn copy_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
     let same_folder = paths.iter().any(|path| path.parent() == Some(target));
     let collision = if same_folder { FOF_RENAMEONCOLLISION } else { 0 };
@@ -690,6 +694,16 @@ pub fn save_dialog(title: &str, file_name: &str, filters: &[(&str, &str)]) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::tests::TempTree;
+
+    #[test]
+    fn permanent_delete_removes_files_and_folders() {
+        let tree = TempTree::new();
+        tree.file("folder/inner.txt", 1).file("a.txt", 1).file("kept.txt", 1);
+        assert!(delete_permanently(&[tree.0.join("folder"), tree.0.join("a.txt")], 0));
+        let left: Vec<_> = std::fs::read_dir(&tree.0).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(left, ["kept.txt"]);
+    }
 
     fn berlin() -> TIME_ZONE_INFORMATION {
         let last_sunday = |month, hour| SYSTEMTIME { wMonth: month, wDay: 5, wHour: hour, ..unsafe { zeroed() } };
