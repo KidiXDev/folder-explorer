@@ -2,12 +2,13 @@ use crate::format::Unit;
 use crate::icons::IconStore;
 use crate::item::{Column, Item, ItemState};
 use crate::scan::Live;
-use crate::ui::FileRow;
+use crate::ui::{FileRow, Span};
 use rayon::prelude::*;
 use slint::{Image, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 use std::cell::{Ref, RefCell};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -49,6 +50,15 @@ impl View {
     }
 }
 
+pub fn touched(span: Span) -> Range<usize> {
+    if span.pitch <= 0.0 {
+        return 0..0;
+    }
+    let first = ((span.start + span.inset) / span.pitch).ceil() - 1.0;
+    let last = ((span.end - span.inset) / span.pitch).floor();
+    first.max(0.0) as usize..(last + 1.0).max(0.0) as usize
+}
+
 fn name_starts_with(name: &str, lowercase_prefix: &str) -> bool {
     let mut name = name.chars().flat_map(char::to_lowercase);
     lowercase_prefix.chars().all(|character| name.next() == Some(character))
@@ -65,6 +75,7 @@ pub struct ListState {
     order: Vec<u32>,
     rows: Vec<u32>,
     selected: Vec<bool>,
+    marquee_base: Vec<bool>,
     cut: Vec<bool>,
     anchor: usize,
     cursor: usize,
@@ -85,6 +96,7 @@ impl ListState {
             order: Vec::new(),
             rows: Vec::new(),
             selected: Vec::new(),
+            marquee_base: Vec::new(),
             cut: Vec::new(),
             anchor: 0,
             cursor: 0,
@@ -95,6 +107,7 @@ impl ListState {
 
     fn set_items(&mut self, items: Vec<Item>) {
         self.selected = vec![false; items.len()];
+        self.marquee_base.clear();
         self.cut = vec![false; items.len()];
         self.items = items;
         self.order.clear();
@@ -245,6 +258,26 @@ impl ListState {
         let (first, last) = (self.anchor.min(row), self.anchor.max(row));
         for index in &self.order[first..=last] {
             self.selected[*index as usize] = true;
+        }
+    }
+
+    pub fn begin_marquee(&mut self, additive: bool) {
+        self.marquee_base = if additive { self.selected.clone() } else { Vec::new() };
+    }
+
+    pub fn select_block(&mut self, outer: Range<usize>, inner: Range<usize>, stride: usize) {
+        self.selected.clone_from(&self.marquee_base);
+        self.selected.resize(self.items.len(), false);
+        let inner = inner.start..inner.end.min(stride);
+        let hits = outer.flat_map(|line| inner.clone().map(move |offset| line * stride + offset));
+        let mut first_hit = None;
+        for row in hits.filter(|row| *row < self.order.len()) {
+            self.selected[self.order[row] as usize] = true;
+            first_hit.get_or_insert(row);
+        }
+        if let Some(row) = first_hit {
+            self.anchor = row;
+            self.cursor = row;
         }
     }
 
@@ -538,6 +571,71 @@ mod tests {
         list.set_items(vec![item("only.txt", false, 1, 0)]);
         list.press(0, false, true);
         assert_eq!(list.selected_count(), 1);
+    }
+
+    fn selected_names(list: &ListState) -> Vec<&str> {
+        list.selected_items().map(|item| &*item.name).collect()
+    }
+
+    #[test]
+    fn a_plain_marquee_replaces_the_selection_with_the_rows_it_touches() {
+        let mut list = state(Column::Name, false, false);
+        list.press(0, false, false);
+        list.begin_marquee(false);
+        list.select_block(1..3, 0..1, 1);
+        assert_eq!(selected_names(&list), ["zoo", "Apple.txt"]);
+        list.select_block(2..9, 0..1, 1);
+        assert_eq!(selected_names(&list), ["Apple.txt", "banana.txt"]);
+        list.press(0, false, true);
+        assert_eq!(list.selected_count(), 3);
+    }
+
+    #[test]
+    fn an_additive_marquee_keeps_the_earlier_selection() {
+        let mut list = state(Column::Name, false, false);
+        list.press(3, false, false);
+        list.begin_marquee(true);
+        list.select_block(0..1, 0..1, 1);
+        assert_eq!(selected_names(&list), ["archive", "banana.txt"]);
+        list.select_block(0..0, 0..1, 1);
+        assert_eq!(selected_names(&list), ["banana.txt"]);
+    }
+
+    #[test]
+    fn a_grid_marquee_selects_the_touched_cells_without_wrapping() {
+        let mut list = state(Column::Name, false, false);
+        list.begin_marquee(false);
+        list.select_block(0..2, 1..5, 2);
+        assert_eq!(selected_names(&list), ["zoo", "banana.txt"]);
+    }
+
+    fn span(start: f32, end: f32) -> Span {
+        Span { start, end, pitch: 30.0, inset: 2.0 }
+    }
+
+    #[test]
+    fn a_span_touches_only_the_items_it_overlaps() {
+        assert_eq!(touched(span(5.0, 5.0)), 0..1);
+        assert_eq!(touched(span(27.0, 33.0)), 0..2);
+        assert_eq!(touched(span(10.0, 95.0)), 0..4);
+    }
+
+    #[test]
+    fn a_span_inside_a_gap_touches_nothing() {
+        assert!(touched(span(29.0, 31.0)).is_empty());
+        assert!(touched(span(0.0, 1.0)).is_empty());
+    }
+
+    #[test]
+    fn a_span_before_the_start_or_without_pitch_touches_nothing() {
+        assert!(touched(span(-40.0, -10.0)).is_empty());
+        assert!(touched(Span { start: 0.0, end: 50.0, pitch: 0.0, inset: 0.0 }).is_empty());
+    }
+
+    #[test]
+    fn a_span_without_insets_covers_the_whole_pitch() {
+        let across = Span { start: 50.0, end: 60.0, pitch: 400.0, inset: 0.0 };
+        assert_eq!(touched(across), 0..1);
     }
 
     #[test]

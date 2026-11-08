@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { ColumnInfo, FileRow } from "types.slint";
-import { DimLabel, EmptyState, FileIcon, LoadingSpinner, RenameBox } from "controls.slint";
+import { ColumnInfo, FileRow, Span } from "types.slint";
+import { DimLabel, DragPreview, EmptyState, FileIcon, ItemTouchArea, LoadingSpinner, MarqueeArea, RenameBox } from "controls.slint";
 
 component HeaderCell {
     in property <ColumnInfo> info;
@@ -80,25 +80,31 @@ component Row {
     in property <[ColumnInfo]> columns;
     in property <length> total-width;
     in property <bool> renaming;
-    callback pressed(bool, bool);
-    callback background-pressed();
-    callback right-pressed(length, length);
-    callback background-menu(length, length);
-    callback activated();
+    in property <bool> drop-target;
+    in property <MouseCursor> drag-cursor;
+    callback touched <=> touch.touched;
+    callback pressed <=> touch.item-pressed;
+    callback right-pressed <=> touch.right-pressed;
+    callback activated <=> touch.double-clicked;
+    callback drag-started <=> touch.drag-started;
+    callback drag-moved <=> touch.drag-moved;
+    callback drag-ended <=> touch.drag-ended;
+    callback drag-cancelled <=> touch.drag-cancelled;
 
     height: Theme.row-height;
     min-width: root.total-width;
-    property <bool> hovered: touch.has-hover && touch.mouse-x < root.total-width;
+    property <bool> hovered: touch.has-hover;
 
     Rectangle {
         x: 6px;
-        y: 1px;
+        y: Theme.item-inset;
         width: root.total-width - 12px;
-        height: parent.height - 2px;
+        height: parent.height - 2 * Theme.item-inset;
         border-radius: Theme.radius;
-        border-width: root.data.selected ? 1px : 0px;
-        border-color: Theme.selected-border;
-        background: root.data.selected ? (root.hovered ? Theme.selected-hover : Theme.selected)
+        border-width: root.data.selected || root.drop-target ? 1px : 0px;
+        border-color: root.drop-target ? Theme.accent : Theme.selected-border;
+        background: root.drop-target ? Theme.selected-hover
+            : root.data.selected ? (root.hovered ? Theme.selected-hover : Theme.selected)
             : root.hovered && touch.pressed ? Theme.pressed
             : root.hovered ? Theme.hover
             : transparent;
@@ -178,25 +184,13 @@ component Row {
         }
     }
 
-    touch := TouchArea {
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down) {
-                if (event.button == PointerEventButton.left) {
-                    if (self.mouse-x < root.total-width) {
-                        root.pressed(event.modifiers.control, event.modifiers.shift);
-                    } else {
-                        root.background-pressed();
-                    }
-                } else if (event.button == PointerEventButton.right) {
-                    if (self.mouse-x < root.total-width) {
-                        root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                    } else {
-                        root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                    }
-                }
-            }
-        }
-        double-clicked => { if (self.mouse-x < root.total-width) { root.activated(); } }
+    touch := ItemTouchArea {
+        x: 0px;
+        y: Theme.item-inset;
+        width: root.total-width;
+        height: parent.height - 2 * Theme.item-inset;
+        selected: root.data.selected;
+        drag-cursor: root.drag-cursor;
     }
 }
 
@@ -205,17 +199,35 @@ export component FileTable {
     in property <[FileRow]> rows;
     in property <length> total-width;
     in property <string> empty-message;
+    in property <int> drag-count;
     callback sort-requested(int);
     callback column-resized(int, length);
     callback row-pressed(int, bool, bool);
     callback row-menu(int, length, length);
     callback background-menu(length, length);
     callback background-pressed();
+    callback marquee-started(bool);
+    callback marquee-changed(Span, Span, int);
+    callback items-dropped(int, bool);
     callback row-activated(int);
     callback rename-committed(string);
     callback rename-cancelled();
 
     property <int> rename-row;
+    property <int> drag-source;
+    property <length> drag-top: marquee.local-y - list.content-y;
+    property <length> drag-left: marquee.local-x - list.content-x;
+    property <int> drag-row: floor(root.drag-top / Theme.row-height);
+    property <length> drag-offset: root.drag-top - root.drag-row * Theme.row-height;
+    property <bool> drag-on-row: root.drag-left >= 0 && root.drag-left < root.total-width
+        && marquee.local-y >= 0 && marquee.local-y < list.visible-height
+        && root.drag-offset >= Theme.item-inset && root.drag-offset < Theme.row-height - Theme.item-inset;
+    property <int> drop-row: marquee.dragging-items && root.drag-on-row && root.drag-row >= 0 && root.drag-row < root.rows.length
+        && root.rows[root.drag-row].folder && !root.rows[root.drag-row].selected ? root.drag-row : -1;
+    property <MouseCursor> drag-cursor: !marquee.dragging-items ? MouseCursor.default
+        : root.drop-row < 0 ? MouseCursor.no-drop
+        : marquee.drag-copy ? MouseCursor.copy
+        : MouseCursor.move;
 
     forward-focus: focus;
 
@@ -250,6 +262,14 @@ export component FileTable {
         width: parent.width;
         height: parent.height;
 
+        key-pressed(event) => {
+            if (event.text == Key.Escape && marquee.dragging) {
+                marquee.cancel();
+                return accept;
+            }
+            reject
+        }
+
         VerticalLayout {
             Rectangle {
                 height: 32px;
@@ -281,50 +301,51 @@ export component FileTable {
             Rectangle {
                 clip: true;
 
-                TouchArea {
-                    y: max(0px, root.rows.length * Theme.row-height + list.content-y);
-                    width: list.visible-width;
-                    // Leave the Fluent horizontal scrollbar available below short lists.
-                    height: max(0px, list.visible-height - self.y - (list.content-width > list.visible-width ? 14px : 0px));
-                    z: 1;
-                    pointer-event(event) => {
-                        if (event.kind == PointerEventKind.down) {
-                            focus.focus();
-                            if (event.button == PointerEventButton.left) {
-                                root.background-pressed();
-                            } else if (event.button == PointerEventButton.right) {
-                                root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                            }
-                        }
-                    }
-                }
-
-                list := ListView {
+                marquee := MarqueeArea {
                     width: parent.width;
                     height: parent.height;
+                    scroll-x: list.content-x;
+                    scroll-y <=> list.content-y;
+                    scroll-limit: min(0px, list.visible-height - list.content-height);
+                    touched => { focus.focus(); }
+                    background-pressed => { root.background-pressed(); }
+                    background-menu(x, y) => { root.background-menu(x, y); }
+                    started(additive) => { root.marquee-started(additive); }
+                    changed(left, top, right, bottom) => {
+                        root.marquee-changed(
+                            { start: top, end: bottom, pitch: Theme.row-height, inset: Theme.item-inset },
+                            { start: left, end: right, pitch: root.total-width, inset: 0px },
+                            1);
+                    }
+                    items-dropped(copy) => {
+                        if (root.drop-row >= 0) {
+                            root.items-dropped(root.drop-row, copy);
+                        }
+                    }
 
-                    for row[index] in root.rows: Row {
-                        data: row;
-                        columns: root.columns;
-                        total-width: root.total-width;
-                        renaming: rename-box.active && root.rename-row == index;
-                        pressed(control, shift) => {
-                            focus.focus();
-                            root.row-pressed(index, control, shift);
+                    list := ListView {
+                        width: parent.width;
+                        height: parent.height;
+
+                        for row[index] in root.rows: Row {
+                            data: row;
+                            columns: root.columns;
+                            total-width: root.total-width;
+                            renaming: rename-box.active && root.rename-row == index;
+                            drop-target: root.drop-row == index;
+                            drag-cursor: root.drag-cursor;
+                            touched => { focus.focus(); }
+                            pressed(control, shift) => { root.row-pressed(index, control, shift); }
+                            right-pressed(x, y) => { root.row-menu(index, x, y); }
+                            activated => { root.row-activated(index); }
+                            drag-started(selecting, x, y) => {
+                                root.drag-source = index;
+                                marquee.item-drag-started(selecting, x, y);
+                            }
+                            drag-moved(x, y, copy) => { marquee.item-drag-moved(x, y, copy); }
+                            drag-ended(copy) => { marquee.item-drag-ended(copy); }
+                            drag-cancelled => { marquee.cancel(); }
                         }
-                        background-pressed => {
-                            focus.focus();
-                            root.background-pressed();
-                        }
-                        background-menu(x, y) => {
-                            focus.focus();
-                            root.background-menu(x, y);
-                        }
-                        right-pressed(x, y) => {
-                            focus.focus();
-                            root.row-menu(index, x, y);
-                        }
-                        activated => { root.row-activated(index); }
                     }
                 }
 
@@ -342,6 +363,18 @@ export component FileTable {
                     message: root.empty-message;
                 }
             }
+        }
+
+        if marquee.dragging-items: DragPreview {
+            width: parent.width;
+            height: parent.height;
+            pointer-x: marquee.absolute-position.x + marquee.local-x - self.absolute-position.x;
+            pointer-y: marquee.absolute-position.y + marquee.local-y - self.absolute-position.y;
+            icon: root.rows[root.drag-source].icon;
+            folder: root.rows[root.drag-source].folder;
+            count: root.drag-count;
+            copy: marquee.drag-copy;
+            target: root.drop-row >= 0 ? root.rows[root.drop-row].cells[0] : "";
         }
     }
 }

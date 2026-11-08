@@ -1,11 +1,12 @@
 use crate::chart;
+use crate::error_log;
 use crate::export;
 use crate::file_ops;
 use crate::format::{Unit, format_elapsed, format_size, plural};
 use crate::hash::hash_file;
 use crate::icons::IconStore;
 use crate::item::{ATTR_HIDDEN, Column, Item};
-use crate::list::{ListModel, ListState, View};
+use crate::list::{ListModel, ListState, View, touched};
 use crate::platform::{self, ClipboardFiles, DiskUsage, Drive};
 use crate::query::{self, DateField, DateRule, Query, SummaryEntry, SummaryKind};
 use crate::scan::{Cache, DirNode, Level, Live, ScanContext, ScanError, SubDir, read_level, scan_tree};
@@ -63,6 +64,7 @@ enum Message {
     TreeChildren { parent: PathBuf, folders: Vec<(OsString, u32)> },
     Listed { scan: u64, items: Vec<Item>, lives: Arc<Vec<Live>> },
     Unreadable { scan: u64, reason: String },
+    Missing { scan: u64, path: PathBuf, fallback: Option<PathBuf>, reason: String },
     Disk { scan: u64, title: String, usage: Option<DiskUsage> },
     Sized { scan: u64, index: usize, node: Arc<DirNode> },
     Finished {
@@ -78,7 +80,7 @@ enum Message {
     Summary { id: u64, entries: Vec<SummaryEntry> },
     Hashed { run: u64, index: usize, hashes: Option<[String; 4]> },
     Deleted { paths: Vec<PathBuf>, succeeded: bool },
-    Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool, sequence: u32 },
+    Pasted { paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, succeeded: bool, sequence: Option<u32> },
     RecycleBin(Option<u64>),
 }
 
@@ -139,7 +141,12 @@ fn scan_folder(
     let Level { mut node, subdirs } = match SubDir::at(&path).and_then(|root| read_level(&root)) {
         Ok(level) => level,
         Err(error) => {
-            let _ = sender.send(Message::Unreadable { scan, reason: describe_error(&path, &error) });
+            let reason = describe_error(&path, &error);
+            let message = match error.kind() {
+                io::ErrorKind::NotFound => Message::Missing { scan, fallback: nearest_existing(&path), path, reason },
+                _ => Message::Unreadable { scan, reason },
+            };
+            let _ = sender.send(message);
             return;
         }
     };
@@ -182,6 +189,24 @@ fn describe_error(path: &Path, error: &io::Error) -> String {
         io::ErrorKind::NotFound => format!("{} does not exist.", path.display()),
         io::ErrorKind::PermissionDenied => format!("You don't have permission to open {}.", path.display()),
         _ => format!("Can't open {}: {error}", path.display()),
+    }
+}
+
+fn drop_refusal(sources: &[PathBuf], target: &Path) -> Option<String> {
+    let source = sources.iter().find(|source| target.starts_with(source))?;
+    let name = source.file_name().unwrap_or(source.as_os_str()).to_string_lossy();
+    Some(format!("\"{name}\" can't be moved or copied into itself."))
+}
+
+fn nearest_existing(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|ancestor| ancestor.is_dir()).map(Path::to_path_buf)
+}
+
+fn prune_history(history: &mut Vec<Location>, missing: &Path, current: &Location) {
+    history.retain(|location| !matches!(location, Location::Folder(path) if path.starts_with(missing)));
+    history.dedup();
+    while history.last() == Some(current) {
+        history.pop();
     }
 }
 
@@ -364,6 +389,9 @@ impl App {
             }
             Message::Listed { scan, items, lives } if scan == self.scan_id => self.on_listed(items, lives),
             Message::Unreadable { scan, reason } if scan == self.scan_id => self.on_unreadable(reason),
+            Message::Missing { scan, path, fallback, reason } if scan == self.scan_id => {
+                self.on_missing(&path, fallback, reason);
+            }
             Message::Disk { scan, title, usage } if scan == self.scan_id => self.on_disk(&title, usage),
             Message::Sized { scan, index, node } if scan == self.scan_id && !self.showing_results => {
                 self.list.update_item(index, |item| item.apply_totals(&node));
@@ -588,6 +616,16 @@ impl App {
         ui.set_list_message(reason.into());
         ui.set_status_activity(SharedString::new());
         self.sync_busy();
+    }
+
+    fn on_missing(&mut self, missing: &Path, fallback: Option<PathBuf>, reason: String) {
+        self.forget(missing);
+        self.refresh_tree(fallback.as_deref());
+        self.location = fallback.map_or(Location::Computer, Location::Folder);
+        prune_history(&mut self.back, missing, &self.location);
+        prune_history(&mut self.forward, missing, &self.location);
+        self.show_location();
+        Timer::single_shot(Duration::ZERO, move || platform::alert("Location is not available", &reason));
     }
 
     fn on_disk(&self, title: &str, usage: Option<DiskUsage>) {
@@ -1148,6 +1186,15 @@ impl App {
         self.show_selection();
     }
 
+    fn begin_marquee(&mut self, additive: bool) {
+        self.list.change_selection(|state| state.begin_marquee(additive));
+    }
+
+    fn select_block(&mut self, outer: Range<usize>, inner: Range<usize>, stride: usize) {
+        self.list.change_selection(|state| state.select_block(outer, inner, stride));
+        self.show_selection();
+    }
+
     fn move_cursor(&mut self, delta: i32, extend: bool) {
         if let Some(row) = self.list.change_selection(|state| state.move_cursor(delta, extend)) {
             self.ui().invoke_reveal_row(row as i32);
@@ -1290,7 +1337,22 @@ impl App {
 
     fn paste(&mut self, files: ClipboardFiles, owner: usize) {
         let Some(target) = self.editable_folder() else { return };
-        let ClipboardFiles { mut paths, is_cut, sequence } = files;
+        let ClipboardFiles { paths, is_cut, sequence } = files;
+        self.transfer(paths, target, is_cut, Some(sequence), owner);
+    }
+
+    fn drop_selection(&mut self, row: usize, copy: bool, owner: usize) {
+        let target = self.list.state().item(row).filter(|item| item.is_dir).map(Item::path);
+        let Some(target) = target else { return };
+        let paths = self.selected_paths();
+        if let Some(reason) = drop_refusal(&paths, &target) {
+            self.ui().set_status_activity(reason.into());
+            return;
+        }
+        self.transfer(paths, target, !copy, None, owner);
+    }
+
+    fn transfer(&mut self, mut paths: Vec<PathBuf>, target: PathBuf, is_cut: bool, sequence: Option<u32>, owner: usize) {
         if is_cut {
             paths.retain(|path| path.parent() != Some(target.as_path()));
         }
@@ -1307,7 +1369,7 @@ impl App {
         });
     }
 
-    fn on_pasted(&mut self, paths: &[PathBuf], target: &Path, is_cut: bool, succeeded: bool, sequence: u32) {
+    fn on_pasted(&mut self, paths: &[PathBuf], target: &Path, is_cut: bool, succeeded: bool, sequence: Option<u32>) {
         for path in paths {
             if let Some(name) = path.file_name() {
                 self.forget(&target.join(name));
@@ -1317,14 +1379,15 @@ impl App {
                 self.refresh_tree(path.parent());
             }
         }
-        if is_cut && succeeded {
+        if let Some(sequence) = sequence.filter(|_| is_cut && succeeded) {
             platform::clear_clipboard_if_unchanged(sequence);
             self.cut_paths.clear();
         }
         self.refresh_tree(Some(target));
         self.reload();
         if !succeeded {
-            self.ui().set_status_activity("Some items were not pasted.".into());
+            let verb = if is_cut { "moved" } else { "copied" };
+            self.ui().set_status_activity(format!("Some items were not {verb}.").into());
         }
     }
 
@@ -1458,7 +1521,10 @@ fn new_folder(shared: &Shared) {
     let Some(parent) = parent else { return };
     match file_ops::create_new_folder(&parent) {
         Ok(name) => shared.borrow_mut().on_created(&parent, name),
-        Err(error) => platform::alert("Can't create a folder", &error.to_string()),
+        Err(error) => {
+            error_log::record(&format!("Creating a folder in {} failed: {error}", parent.display()));
+            platform::alert("Can't create a folder", &error.to_string());
+        }
     }
 }
 
@@ -1535,6 +1601,9 @@ fn wire(ui: &AppWindow, shared: &Shared) {
     on!(on_row_pressed, |app, row, toggle, extend| app.press_row(row as usize, toggle, extend));
     on!(on_row_context, |app, row| app.context_row(row as usize));
     on!(on_background_pressed, |app| app.clear_selection());
+    on!(on_marquee_started, |app, additive| app.begin_marquee(additive));
+    on!(on_marquee_changed, |app, outer, inner, stride| app.select_block(touched(outer), touched(inner), stride.max(0) as usize));
+    on!(on_items_dropped, |app, row, copy| app.drop_selection(row as usize, copy, platform::active_window()));
     on!(on_cursor_moved, |app, delta, extend| app.move_cursor(delta, extend));
     on!(on_search_changed, |app| app.schedule_search());
     on!(on_summary_kind_chosen, |app, kind| app.choose_summary(kind as usize));
@@ -1670,7 +1739,7 @@ mod tests {
     use crate::item::HASH_NAMES;
     use crate::scan::tests::{TempTree, scan};
     use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-    use slint::platform::{Key, Platform, WindowAdapter, WindowEvent, set_platform};
+    use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent, set_platform};
     use std::os::windows::ffi::OsStringExt;
 
     struct Headless;
@@ -1885,5 +1954,338 @@ mod tests {
     fn missing_folders_read_plainly() {
         let error = io::Error::from(io::ErrorKind::NotFound);
         assert_eq!(describe_error(Path::new(r"C:\gone"), &error), r"C:\gone does not exist.");
+    }
+
+    // Pointer-driven list behaviour
+
+    const ROW_HEIGHT: f32 = 30.0;
+    const DETAILS_X: f32 = 600.0;
+    const SMALL_ICONS_X: f32 = 330.0;
+    const SMALL_ICON_WIDTH: f32 = 270.0;
+
+    struct ListHarness {
+        ui: AppWindow,
+        shared: Shared,
+        drops: Rc<RefCell<Vec<(i32, bool)>>>,
+        first_row_top: f32,
+        pointer_x: Cell<f32>,
+        pointer_y: Cell<f32>,
+    }
+
+    fn listed(name: &str, is_dir: bool) -> Item {
+        Item {
+            name: name.into(),
+            native_name: None,
+            parent: Arc::from(Path::new(r"C:\data")),
+            is_dir,
+            attrs: 0,
+            times: Default::default(),
+            size: 1,
+            file_count: 0,
+            dir_count: 0,
+            state: crate::item::ItemState::Ready,
+            hashes: None,
+        }
+    }
+
+    impl ListHarness {
+        fn new() -> Self {
+            Self::in_view(View::Details, DETAILS_X)
+        }
+
+        fn in_view(view: View, x: f32) -> Self {
+            let (ui, shared) = headless_app();
+            ui.window().set_size(LogicalSize::new(1100.0, 700.0));
+            ui.set_showing_drives(false);
+            ui.show().unwrap();
+            {
+                let app = shared.borrow();
+                ui.set_rows(ModelRc::from(app.list.clone() as Rc<dyn slint::Model<Data = _>>));
+                app.list.set_items(vec![
+                    listed("a.txt", false),
+                    listed("dest", true),
+                    listed("b.txt", false),
+                    listed("other", true),
+                ]);
+                app.sync_columns();
+                app.show_view(view);
+            }
+            let drops = Rc::new(RefCell::new(Vec::new()));
+            let sink = drops.clone();
+            ui.on_items_dropped(move |row, copy| sink.borrow_mut().push((row, copy)));
+            macro_rules! connect {
+                ($setter:ident, |$app:ident $(, $argument:ident)*| $body:expr) => {{
+                    let shared = shared.clone();
+                    ui.$setter(move |$($argument),*| {
+                        let $app = &mut *shared.borrow_mut();
+                        $body;
+                    });
+                }};
+            }
+            connect!(on_row_pressed, |app, row, toggle, extend| app.press_row(row as usize, toggle, extend));
+            connect!(on_background_pressed, |app| app.clear_selection());
+            connect!(on_marquee_started, |app, additive| app.begin_marquee(additive));
+            connect!(on_marquee_changed, |app, outer, inner, stride| {
+                app.select_block(touched(outer), touched(inner), stride.max(0) as usize)
+            });
+            let mut harness =
+                Self { ui, shared, drops, first_row_top: 0.0, pointer_x: Cell::new(x), pointer_y: Cell::new(0.0) };
+            harness.first_row_top = (0..1400)
+                .map(|step| step as f32 / 2.0)
+                .find(|y| {
+                    harness.click(*y);
+                    harness.selected_rows() == [0]
+                })
+                .expect("the first row answers clicks");
+            harness.release_control();
+            harness
+        }
+
+        fn row(&self, row: usize) -> f32 {
+            self.first_row_top + row as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0 - 2.0
+        }
+
+        fn gap_after(&self, row: usize) -> f32 {
+            self.first_row_top + (row + 1) as f32 * ROW_HEIGHT - 2.0
+        }
+
+        fn event(&self, event: WindowEvent) {
+            self.ui.window().dispatch_event(event);
+        }
+
+        fn point(&self, y: f32) -> slint::LogicalPosition {
+            self.pointer_y.set(y);
+            slint::LogicalPosition::new(self.pointer_x.get(), y)
+        }
+
+        fn aim_at_column(&self, column: usize) {
+            self.pointer_x.set(SMALL_ICONS_X + column as f32 * SMALL_ICON_WIDTH);
+        }
+
+        fn press_at(&self, y: f32) {
+            let position = self.point(y);
+            self.event(WindowEvent::PointerMoved { position });
+            self.event(WindowEvent::PointerPressed { position, button: PointerEventButton::Left });
+        }
+
+        fn move_to(&self, y: f32) {
+            let start = self.pointer_y.get();
+            for step in 1..=8 {
+                let position = self.point(start + (y - start) * step as f32 / 8.0);
+                self.event(WindowEvent::PointerMoved { position });
+            }
+        }
+
+        fn release_at(&self, y: f32) {
+            let position = self.point(y);
+            self.event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
+        }
+
+        fn click(&self, y: f32) {
+            self.press_at(y);
+            self.release_at(y);
+        }
+
+        fn drag(&self, from: f32, to: f32) {
+            self.press_at(from);
+            self.move_to(to);
+            self.release_at(to);
+        }
+
+        fn hold_control(&self) {
+            self.event(WindowEvent::KeyPressed { text: Key::Control.into() });
+        }
+
+        fn release_control(&self) {
+            self.event(WindowEvent::KeyReleased { text: Key::Control.into() });
+        }
+
+        fn selected_rows(&self) -> Vec<usize> {
+            let app = self.shared.borrow();
+            let state = app.list.state();
+            (0..state.row_count()).filter(|row| state.is_row_selected(*row)).collect()
+        }
+
+        fn drops(&self) -> Vec<(i32, bool)> {
+            self.drops.borrow_mut().drain(..).collect()
+        }
+    }
+
+    #[test]
+    fn dragging_a_selected_item_onto_a_folder_drops_the_whole_selection() {
+        let list = ListHarness::new();
+        list.click(list.row(2));
+        list.hold_control();
+        list.click(list.row(3));
+        list.release_control();
+        assert_eq!(list.selected_rows(), [2, 3]);
+        list.drag(list.row(3), list.row(0));
+        assert_eq!(list.drops(), [(0, false)]);
+        assert_eq!(list.selected_rows(), [2, 3]);
+    }
+
+    #[test]
+    fn holding_control_at_the_drop_copies() {
+        let list = ListHarness::new();
+        list.click(list.row(3));
+        list.press_at(list.row(3));
+        list.move_to(list.row(1));
+        list.hold_control();
+        list.release_at(list.row(1));
+        list.release_control();
+        assert_eq!(list.drops(), [(1, true)]);
+    }
+
+    #[test]
+    fn releasing_over_a_file_a_gap_or_after_escape_drops_nothing() {
+        let list = ListHarness::new();
+        list.click(list.row(3));
+        list.drag(list.row(3), list.row(2));
+        list.drag(list.row(3), list.gap_after(0));
+        list.press_at(list.row(3));
+        list.move_to(list.row(0));
+        press(&list.ui, &[Key::Escape.into()]);
+        list.release_at(list.row(0));
+        assert_eq!(list.drops(), []);
+        assert_eq!(list.selected_rows(), [3]);
+    }
+
+    #[test]
+    fn dragging_an_unselected_item_selects_and_drops_only_it() {
+        let list = ListHarness::new();
+        list.click(list.row(2));
+        list.drag(list.row(3), list.row(1));
+        assert_eq!(list.drops(), [(1, false)]);
+        assert_eq!(list.selected_rows(), [3]);
+    }
+
+    #[test]
+    fn a_plain_click_on_a_selected_item_keeps_only_it_once_released() {
+        let list = ListHarness::new();
+        list.click(list.row(1));
+        list.hold_control();
+        list.click(list.row(2));
+        list.release_control();
+        list.press_at(list.row(2));
+        assert_eq!(list.selected_rows(), [1, 2]);
+        list.release_at(list.row(2));
+        assert_eq!(list.selected_rows(), [2]);
+    }
+
+    #[test]
+    fn control_dragging_from_an_item_adds_a_marquee_to_the_selection() {
+        let list = ListHarness::new();
+        list.click(list.row(0));
+        list.hold_control();
+        list.drag(list.row(3), list.row(2));
+        list.release_control();
+        assert_eq!(list.drops(), []);
+        assert_eq!(list.selected_rows(), [0, 2, 3]);
+    }
+
+    #[test]
+    fn a_drag_from_the_gap_between_rows_draws_a_marquee() {
+        let list = ListHarness::new();
+        list.click(list.row(3));
+        list.drag(list.gap_after(0), list.row(2));
+        assert_eq!(list.drops(), []);
+        assert_eq!(list.selected_rows(), [1, 2]);
+    }
+
+    #[test]
+    fn icon_views_drop_onto_folders_and_draw_marquees_from_the_gaps() {
+        let grid = ListHarness::in_view(View::Small, SMALL_ICONS_X);
+        grid.drag(grid.row(1), grid.row(0));
+        assert_eq!(grid.drops(), [(0, false)]);
+        assert_eq!(grid.selected_rows(), [3]);
+        grid.aim_at_column(1);
+        grid.drag(grid.gap_after(0), grid.row(0) - 6.0);
+        assert_eq!(grid.drops(), []);
+        assert_eq!(grid.selected_rows(), [1]);
+    }
+
+    #[test]
+    fn drops_into_a_dragged_folder_or_its_descendants_are_refused() {
+        let sources = [PathBuf::from(r"C:\data\photos"), PathBuf::from(r"C:\data\notes.txt")];
+        assert!(drop_refusal(&sources, Path::new(r"C:\data\photos")).is_some());
+        assert!(drop_refusal(&sources, Path::new(r"C:\data\photos\2024\june")).is_some());
+        assert!(drop_refusal(&sources, Path::new(r"C:\data\archive")).is_none());
+        assert!(drop_refusal(&sources, Path::new(r"C:\data\photos-old")).is_none());
+    }
+
+    #[test]
+    fn a_dropped_folder_is_named_in_the_refusal() {
+        let sources = [PathBuf::from(r"C:\data\photos")];
+        assert_eq!(
+            drop_refusal(&sources, Path::new(r"C:\data\photos\raw")).as_deref(),
+            Some("\"photos\" can't be moved or copied into itself.")
+        );
+    }
+
+    fn folder(path: &str) -> Location {
+        Location::Folder(PathBuf::from(path))
+    }
+
+    #[test]
+    fn history_forgets_a_missing_folder_and_everything_below_it() {
+        let mut back = vec![
+            Location::Computer,
+            folder(r"C:\a"),
+            folder(r"C:\a\b"),
+            folder(r"C:\a\b\c"),
+            folder(r"C:\a\bc"),
+            folder(r"C:\a"),
+        ];
+        prune_history(&mut back, Path::new(r"C:\a\b"), &folder(r"C:\x"));
+        assert!(back == [Location::Computer, folder(r"C:\a"), folder(r"C:\a\bc"), folder(r"C:\a")]);
+    }
+
+    #[test]
+    fn pruned_history_never_repeats_the_fallback_or_its_neighbours() {
+        let mut back = vec![folder(r"C:\a"), folder(r"C:\a\b"), folder(r"C:\a"), folder(r"C:\a\b")];
+        prune_history(&mut back, Path::new(r"C:\a\b"), &folder(r"C:\a"));
+        assert!(back.is_empty());
+        let mut forward = vec![folder(r"C:\y"), folder(r"C:\y"), folder(r"C:\a\b\c")];
+        prune_history(&mut forward, Path::new(r"C:\a\b"), &folder(r"C:\a"));
+        assert!(forward == [folder(r"C:\y")]);
+    }
+
+    #[test]
+    fn going_back_to_a_deleted_folder_lands_on_its_parent_without_a_dead_history() {
+        let tree = TempTree::new();
+        tree.file(r"kept\file.txt", 1);
+        let (kept, gone) = (tree.0.join("kept"), tree.0.join(r"kept\gone"));
+        let (ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.back = vec![Location::Computer, Location::Folder(gone.clone()), Location::Folder(kept.clone())];
+        app.location = Location::Folder(gone.clone());
+        let scan = app.scan_id;
+        app.handle(Message::Missing { scan, path: gone, fallback: Some(kept.clone()), reason: String::new() });
+        assert!(app.location == Location::Folder(kept));
+        assert!(app.back == [Location::Computer]);
+        assert!(ui.get_can_go_back() && !ui.get_can_go_forward());
+    }
+
+    #[test]
+    fn a_missing_folder_falls_back_to_its_nearest_existing_ancestor() {
+        let tree = TempTree::new();
+        tree.file(r"kept\file.txt", 1);
+        let missing = tree.0.join(r"kept\gone\deeper");
+        assert_eq!(nearest_existing(&missing), Some(tree.0.join("kept")));
+    }
+
+    #[test]
+    fn a_missing_folder_reports_its_fallback_instead_of_an_error() {
+        let tree = TempTree::new();
+        let (sender, receiver) = mpsc::channel();
+        let missing = tree.0.join("gone");
+        scan_folder(7, 0, missing.clone(), HashMap::new(), Arc::default(), sender);
+        match receiver.recv().unwrap() {
+            Message::Missing { scan, path, fallback, reason } => {
+                assert_eq!((scan, path, fallback), (7, missing.clone(), Some(tree.0.clone())));
+                assert_eq!(reason, format!("{} does not exist.", missing.display()));
+            }
+            _ => panic!("expected a missing-folder message"),
+        }
     }
 }

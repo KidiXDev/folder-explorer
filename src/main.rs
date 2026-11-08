@@ -2,6 +2,7 @@
 
 mod app;
 mod chart;
+mod error_log;
 mod export;
 mod file_ops;
 mod format;
@@ -27,6 +28,7 @@ const SCAN_STACK_BYTES: usize = 16 << 20;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<(), slint::PlatformError> {
+    error_log::install();
     rayon::ThreadPoolBuilder::new()
         .stack_size(SCAN_STACK_BYTES)
         .build_global()
