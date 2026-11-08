@@ -6,6 +6,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub fn app_folder() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("FolderExplorer"))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TreeMemory {
     pub auto_expand_off: bool,
@@ -76,8 +80,7 @@ impl Settings {
     }
 
     fn file() -> Option<PathBuf> {
-        let base = std::env::var_os("APPDATA")?;
-        Some(PathBuf::from(base).join("FolderExplorer").join("settings.ini"))
+        Some(app_folder()?.join("settings.ini"))
     }
 
     pub fn load() -> Self {

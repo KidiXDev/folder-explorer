@@ -21,8 +21,9 @@ use windows::Win32::UI::Shell::{
     BHID_EnumItems, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN, SIGDN_FILESYSPATH,
     SIGDN_NORMALDISPLAY,
 };
+use crate::error_log;
 use windows::core::{HSTRING, Interface};
-use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HWND, LPARAM, LRESULT, MAX_PATH, SYSTEMTIME, WPARAM};
+use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HMODULE, HWND, LPARAM, LRESULT, MAX_PATH, SYSTEMTIME, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
 use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
@@ -34,7 +35,11 @@ use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
     OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::Diagnostics::Debug::{EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
+use windows_sys::Win32::System::LibraryLoader::{
+    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
+    GetModuleHandleExW, GetProcAddress, LoadLibraryW,
+};
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 use windows_sys::Win32::System::Time::{
@@ -493,11 +498,43 @@ pub fn move_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
 }
 
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
-    let (from, to) = (wide(from), wide(to));
-    match unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } {
-        0 => Err(io::Error::last_os_error()),
-        _ => Ok(()),
+    let (wide_from, wide_to) = (wide(from), wide(to));
+    if unsafe { MoveFileW(wide_from.as_ptr(), wide_to.as_ptr()) } != 0 {
+        return Ok(());
     }
+    let error = io::Error::last_os_error();
+    error_log::record(&format!("Rename {} to {} failed: {error}", from.display(), to.display()));
+    Err(error)
+}
+
+// Native crash reporting
+
+fn module_at(address: usize) -> Option<(String, usize)> {
+    let mut module: HMODULE = null_mut();
+    let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if unsafe { GetModuleHandleExW(flags, address as *const u16, &mut module) } == 0 {
+        return None;
+    }
+    let mut name = [0u16; MAX_PATH as usize];
+    let length = unsafe { GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32) } as usize;
+    Some((String::from_utf16_lossy(&name[..length]), address - module as usize))
+}
+
+unsafe extern "system" fn on_unhandled_exception(pointers: *const EXCEPTION_POINTERS) -> i32 {
+    let Some(record) = (unsafe { pointers.as_ref().and_then(|pointers| pointers.ExceptionRecord.as_ref()) }) else {
+        return EXCEPTION_CONTINUE_SEARCH;
+    };
+    let address = record.ExceptionAddress as usize;
+    let place = match module_at(address) {
+        Some((module, offset)) => format!("{module}+{offset:#x}"),
+        None => format!("{address:#x}"),
+    };
+    error_log::record(&format!("native exception {:#010x} at {place}", record.ExceptionCode as u32));
+    EXCEPTION_CONTINUE_SEARCH
+}
+
+pub fn report_native_crashes() {
+    unsafe { SetUnhandledExceptionFilter(Some(on_unhandled_exception)) };
 }
 
 pub fn recycle_bin_size() -> Option<u64> {

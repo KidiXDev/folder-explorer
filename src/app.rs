@@ -1,4 +1,5 @@
 use crate::chart;
+use crate::error_log;
 use crate::export;
 use crate::file_ops;
 use crate::format::{Unit, format_elapsed, format_size, plural};
@@ -1458,7 +1459,10 @@ fn new_folder(shared: &Shared) {
     let Some(parent) = parent else { return };
     match file_ops::create_new_folder(&parent) {
         Ok(name) => shared.borrow_mut().on_created(&parent, name),
-        Err(error) => platform::alert("Can't create a folder", &error.to_string()),
+        Err(error) => {
+            error_log::record(&format!("Creating a folder in {} failed: {error}", parent.display()));
+            platform::alert("Can't create a folder", &error.to_string());
+        }
     }
 }
 
