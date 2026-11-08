@@ -13,16 +13,19 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Storage::EnhancedStorage::PKEY_Home_IsPinned;
+use windows::Win32::Foundation::HWND as ComHwnd;
 use windows::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    CoUninitialize,
 };
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN, SIGDN_FILESYSPATH,
-    SIGDN_NORMALDISPLAY,
+    BHID_EnumItems, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_RENAMEONCOLLISION,
+    FOF_WANTNUKEWARNING, FOFX_NOCOPYHOOKS, FOFX_RECYCLEONDELETE, FileOperation, IEnumShellItems, IFileOperation,
+    IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN, SIGDN_FILESYSPATH, SIGDN_NORMALDISPLAY,
 };
 use crate::error_log;
-use windows::core::{HSTRING, Interface};
+use windows::core::{HSTRING, Interface, PCWSTR};
 use windows_sys::Win32::Foundation::{FILETIME, GlobalFree, HMODULE, HWND, LPARAM, LRESULT, MAX_PATH, SYSTEMTIME, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
 use windows_sys::Win32::Graphics::Dwm::{
@@ -52,9 +55,8 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_HIDEREADONLY, OFN_OVERWRITEPROMPT, OPENFILENAMEW,
 };
 use windows_sys::Win32::UI::Shell::{
-    DROPFILES, DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_RENAMEONCOLLISION,
-    FOF_WANTNUKEWARNING, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHEmptyRecycleBinW, SHFILEOPSTRUCTW, SHFileOperationW, SHQUERYRBINFO, SHQueryRecycleBinW,
-    ShellExecuteExW,
+    DROPFILES, DragQueryFileW, HDROP, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHEmptyRecycleBinW, SHQUERYRBINFO,
+    SHQueryRecycleBinW, ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, GWLP_WNDPROC, GetWindowPlacement, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_TASKMODAL, MB_YESNO,
@@ -464,37 +466,86 @@ pub fn active_window() -> usize {
     unsafe { GetActiveWindow() as usize }
 }
 
-fn shell_operation(function: u32, paths: &[PathBuf], target: Option<&Path>, flags: u32, owner: usize) -> bool {
-    let mut from: Vec<u16> = paths.iter().flat_map(wide).collect();
-    from.push(0);
-    let mut to: Vec<u16> = target.map(wide).unwrap_or_default();
-    to.push(0);
-    let mut operation: SHFILEOPSTRUCTW = unsafe { zeroed() };
-    operation.hwnd = owner as _;
-    operation.wFunc = function;
-    operation.pFrom = from.as_ptr();
-    operation.pTo = to.as_ptr();
-    operation.fFlags = flags as u16;
-    let failed = unsafe { SHFileOperationW(&mut operation) };
-    failed == 0 && operation.fAnyOperationsAborted == 0
+enum FileAction<'a> {
+    Delete,
+    CopyInto(&'a Path),
+    MoveInto(&'a Path),
+}
+
+fn shell_item(path: &Path) -> windows::core::Result<IShellItem> {
+    unsafe { SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None) }
+}
+
+unsafe fn perform_file_operation(
+    action: &FileAction,
+    paths: &[PathBuf],
+    flags: FILEOPERATION_FLAGS,
+    owner: usize,
+) -> windows::core::Result<bool> {
+    unsafe {
+        let operation: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
+        operation.SetOperationFlags(flags | FOFX_NOCOPYHOOKS)?;
+        operation.SetOwnerWindow(ComHwnd(owner as _))?;
+        let destination = match action {
+            FileAction::Delete => None,
+            FileAction::CopyInto(target) | FileAction::MoveInto(target) => Some(shell_item(target)?),
+        };
+        for path in paths {
+            let item = shell_item(path)?;
+            match (action, &destination) {
+                (FileAction::CopyInto(_), Some(folder)) => operation.CopyItem(&item, folder, PCWSTR::null(), None)?,
+                (FileAction::MoveInto(_), Some(folder)) => operation.MoveItem(&item, folder, PCWSTR::null(), None)?,
+                _ => operation.DeleteItem(&item, None)?,
+            }
+        }
+        operation.PerformOperations()?;
+        Ok(!operation.GetAnyOperationsAborted()?.as_bool())
+    }
+}
+
+fn describe_action(action: &FileAction) -> String {
+    match action {
+        FileAction::Delete => "Delete".into(),
+        FileAction::CopyInto(target) => format!("Copy into {}", target.display()),
+        FileAction::MoveInto(target) => format!("Move into {}", target.display()),
+    }
+}
+
+fn file_operation(action: FileAction, paths: &[PathBuf], flags: FILEOPERATION_FLAGS, owner: usize) -> bool {
+    let result = unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
+        let result = perform_file_operation(&action, paths, flags, owner);
+        if initialized {
+            CoUninitialize();
+        }
+        result
+    };
+    let outcome = match &result {
+        Ok(true) => return true,
+        Ok(false) => "was cancelled or did not finish".to_string(),
+        Err(error) => format!("failed: {error}"),
+    };
+    error_log::record(&format!("{} {outcome}: {}", describe_action(&action), error_log::describe_paths(paths)));
+    false
 }
 
 pub fn recycle(paths: &[PathBuf], owner: usize) -> bool {
-    shell_operation(FO_DELETE, paths, None, FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING, owner)
+    let flags = FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING;
+    file_operation(FileAction::Delete, paths, flags, owner)
 }
 
 pub fn delete_permanently(paths: &[PathBuf], owner: usize) -> bool {
-    shell_operation(FO_DELETE, paths, None, FOF_NOCONFIRMATION, owner)
+    file_operation(FileAction::Delete, paths, FOF_NOCONFIRMATION, owner)
 }
 
 pub fn copy_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
     let same_folder = paths.iter().any(|path| path.parent() == Some(target));
-    let collision = if same_folder { FOF_RENAMEONCOLLISION } else { 0 };
-    shell_operation(FO_COPY, paths, Some(target), FOF_ALLOWUNDO | collision, owner)
+    let collision = if same_folder { FOF_RENAMEONCOLLISION } else { FILEOPERATION_FLAGS(0) };
+    file_operation(FileAction::CopyInto(target), paths, FOF_ALLOWUNDO | collision, owner)
 }
 
 pub fn move_into(paths: &[PathBuf], target: &Path, owner: usize) -> bool {
-    shell_operation(FO_MOVE, paths, Some(target), FOF_ALLOWUNDO, owner)
+    file_operation(FileAction::MoveInto(target), paths, FOF_ALLOWUNDO, owner)
 }
 
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
@@ -740,6 +791,26 @@ mod tests {
         assert!(delete_permanently(&[tree.0.join("folder"), tree.0.join("a.txt")], 0));
         let left: Vec<_> = std::fs::read_dir(&tree.0).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         assert_eq!(left, ["kept.txt"]);
+    }
+
+    #[test]
+    #[ignore = "slow: deletes six large temporary trees at once, several times"]
+    fn concurrent_deletes_survive_third_party_copy_hooks() {
+        for round in 0..6 {
+            let trees: Vec<TempTree> = (0..6).map(|_| TempTree::new()).collect();
+            for tree in &trees {
+                for folder in 0..150 {
+                    tree.file(&format!("a{}/b{}/c{folder}/file.txt", folder % 7, folder % 13), 1);
+                }
+            }
+            thread::scope(|scope| {
+                for tree in &trees {
+                    let paths: Vec<PathBuf> = std::fs::read_dir(&tree.0).unwrap().map(|entry| entry.unwrap().path()).collect();
+                    scope.spawn(move || assert!(delete_permanently(&paths, 0)));
+                }
+            });
+            eprintln!("round {round} ok");
+        }
     }
 
     fn berlin() -> TIME_ZONE_INFORMATION {
