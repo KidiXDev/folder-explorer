@@ -1,6 +1,6 @@
 import { CheckBox, ComboBox, LineEdit, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, SummaryRow, TreemapTile, TreeRow } from "types.slint";
+import { ColumnChoice, ColumnInfo, Crumb, DriveCard, FileRow, Span, SummaryRow, TreemapTile, TreeRow } from "types.slint";
 import { CaptionButton, CommandButton, DimLabel, IconButton, IndeterminateBar, Label, LoadingSpinner, MenuPopover, PopoverItem, SubmenuPopover, UsageBar } from "controls.slint";
 import { FileGrid } from "file_grid.slint";
 import { FileTable } from "file_table.slint";
@@ -529,6 +529,9 @@ export component AppWindow inherits Window {
     callback row-context(int);
     callback row-activated(int);
     callback background-pressed();
+    callback marquee-started(bool);
+    callback marquee-changed(Span, Span, int);
+    callback items-dropped(int, bool);
     callback cursor-moved(int, bool);
     callback search-changed();
     callback summary-kind-chosen(int);
@@ -1228,6 +1231,7 @@ export component AppWindow inherits Window {
                                 rows: root.details ? root.rows : [];
                                 total-width: root.columns-width;
                                 empty-message: root.list-message;
+                                drag-count: root.selected-count;
                                 sort-requested(index) => { root.sort-requested(index); }
                                 column-resized(index, width) => { root.column-resized(index, width); }
                                 row-pressed(index, control, shift) => { root.row-pressed(index, control, shift); }
@@ -1241,6 +1245,9 @@ export component AppWindow inherits Window {
                                     list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
                                 }
                                 background-pressed => { root.background-pressed(); }
+                                marquee-started(additive) => { root.marquee-started(additive); }
+                                marquee-changed(outer, inner, stride) => { root.marquee-changed(outer, inner, stride); }
+                                items-dropped(index, copy) => { root.items-dropped(index, copy); }
                                 row-activated(index) => { root.row-activated(index); }
                                 rename-committed(text) => { root.rename-committed(text); }
                                 rename-cancelled => { root.rename-cancelled(); }
@@ -1254,6 +1261,7 @@ export component AppWindow inherits Window {
                                 view: root.view-index;
                                 rows: root.details ? [] : root.rows;
                                 empty-message: root.list-message;
+                                drag-count: root.selected-count;
                                 row-pressed(index, control, shift) => { root.row-pressed(index, control, shift); }
                                 row-menu(index, x, y) => {
                                     root.row-context(index);
@@ -1265,6 +1273,9 @@ export component AppWindow inherits Window {
                                     list-menu.show({ x: x - list-menu.absolute-position.x, y: y - list-menu.absolute-position.y });
                                 }
                                 background-pressed => { root.background-pressed(); }
+                                marquee-started(additive) => { root.marquee-started(additive); }
+                                marquee-changed(outer, inner, stride) => { root.marquee-changed(outer, inner, stride); }
+                                items-dropped(index, copy) => { root.items-dropped(index, copy); }
                                 row-activated(index) => { root.row-activated(index); }
                                 rename-committed(text) => { root.rename-committed(text); }
                                 rename-cancelled => { root.rename-cancelled(); }

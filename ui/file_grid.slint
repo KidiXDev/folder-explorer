@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { FileRow } from "types.slint";
-import { DimLabel, EmptyState, FileIcon, Label, LoadingSpinner, RenameBox } from "controls.slint";
+import { FileRow, Span } from "types.slint";
+import { DimLabel, DragPreview, EmptyState, FileIcon, ItemTouchArea, Label, LoadingSpinner, MarqueeArea, RenameBox } from "controls.slint";
 
 component GridCell {
     in property <FileRow> data;
@@ -9,19 +9,27 @@ component GridCell {
     in property <bool> stacked;
     in property <bool> tile;
     in property <bool> renaming;
-    callback pressed(bool, bool);
-    callback right-pressed(length, length);
-    callback activated();
+    in property <bool> drop-target;
+    in property <MouseCursor> drag-cursor;
+    callback touched <=> touch.touched;
+    callback pressed <=> touch.item-pressed;
+    callback right-pressed <=> touch.right-pressed;
+    callback activated <=> touch.double-clicked;
+    callback drag-started <=> touch.drag-started;
+    callback drag-moved <=> touch.drag-moved;
+    callback drag-ended <=> touch.drag-ended;
+    callback drag-cancelled <=> touch.drag-cancelled;
 
     Rectangle {
-        x: 3px;
-        y: 2px;
-        width: parent.width - 6px;
-        height: parent.height - 4px;
+        x: Theme.tile-inset;
+        y: Theme.item-inset;
+        width: parent.width - 2 * Theme.tile-inset;
+        height: parent.height - 2 * Theme.item-inset;
         border-radius: Theme.radius;
-        border-width: root.data.selected || (root.tile && touch.has-hover) ? 1px : 0px;
-        border-color: root.data.selected ? Theme.selected-border : Theme.line;
-        background: root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
+        border-width: root.data.selected || root.drop-target || (root.tile && touch.has-hover) ? 1px : 0px;
+        border-color: root.drop-target ? Theme.accent : root.data.selected ? Theme.selected-border : Theme.line;
+        background: root.drop-target ? Theme.selected-hover
+            : root.data.selected ? (touch.has-hover ? Theme.selected-hover : Theme.selected)
             : touch.pressed ? Theme.pressed
             : touch.has-hover ? Theme.hover
             : transparent;
@@ -136,17 +144,13 @@ component GridCell {
         }
     }
 
-    touch := TouchArea {
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down) {
-                if (event.button == PointerEventButton.left) {
-                    root.pressed(event.modifiers.control, event.modifiers.shift);
-                } else if (event.button == PointerEventButton.right) {
-                    root.right-pressed(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                }
-            }
-        }
-        double-clicked => { root.activated(); }
+    touch := ItemTouchArea {
+        x: Theme.tile-inset;
+        y: Theme.item-inset;
+        width: parent.width - 2 * Theme.tile-inset;
+        height: parent.height - 2 * Theme.item-inset;
+        selected: root.data.selected;
+        drag-cursor: root.drag-cursor;
     }
 }
 
@@ -154,10 +158,14 @@ export component FileGrid {
     in property <[FileRow]> rows;
     in property <int> view;
     in property <string> empty-message;
+    in property <int> drag-count;
     callback row-pressed(int, bool, bool);
     callback row-menu(int, length, length);
     callback background-menu(length, length);
     callback background-pressed();
+    callback marquee-started(bool);
+    callback marquee-changed(Span, Span, int);
+    callback items-dropped(int, bool);
     callback row-activated(int);
     callback rename-committed(string);
     callback rename-cancelled();
@@ -183,6 +191,24 @@ export component FileGrid {
     property <int> columns: max(1, floor((root.width - 2 * root.gutter - 8px) / root.cell-width));
     property <int> lines: ceil(root.rows.length / root.columns);
     property <int> rename-index: -1;
+    property <int> drag-source;
+    property <length> drag-top: marquee.local-y - list.content-y;
+    property <length> drag-left: marquee.local-x - list.content-x - root.gutter;
+    property <int> drag-line: floor(root.drag-top / root.cell-height);
+    property <int> drag-column: floor(root.drag-left / root.cell-width);
+    property <int> drag-index: root.index-at(root.drag-line, root.drag-column);
+    property <length> drag-offset-y: root.drag-top - root.drag-line * root.cell-height;
+    property <length> drag-offset-x: root.drag-left - root.drag-column * root.cell-width;
+    property <bool> drag-on-cell: marquee.local-y >= 0 && marquee.local-y < list.visible-height
+        && root.drag-line >= 0 && root.drag-line < root.lines && root.drag-column >= 0 && root.drag-column < root.columns
+        && root.drag-offset-y >= Theme.item-inset && root.drag-offset-y < root.cell-height - Theme.item-inset
+        && root.drag-offset-x >= Theme.tile-inset && root.drag-offset-x < root.cell-width - Theme.tile-inset;
+    property <int> drop-index: marquee.dragging-items && root.drag-on-cell && root.drag-index < root.rows.length
+        && root.rows[root.drag-index].folder && !root.rows[root.drag-index].selected ? root.drag-index : -1;
+    property <MouseCursor> drag-cursor: !marquee.dragging-items ? MouseCursor.default
+        : root.drop-index < 0 ? MouseCursor.no-drop
+        : marquee.drag-copy ? MouseCursor.copy
+        : MouseCursor.move;
 
     out property <int> vertical-step: root.column-major ? 1 : root.columns;
     out property <int> horizontal-step: root.column-major ? root.lines : 1;
@@ -235,69 +261,77 @@ export component FileGrid {
         width: parent.width;
         height: parent.height;
 
+        key-pressed(event) => {
+            if (event.text == Key.Escape && marquee.dragging) {
+                marquee.cancel();
+                return accept;
+            }
+            reject
+        }
+
         Rectangle {
             clip: true;
 
-            TouchArea {
-                y: max(0px, root.lines * root.cell-height + list.content-y);
-                width: list.visible-width;
-                height: max(0px, list.visible-height - self.y);
-                z: 1;
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down) {
-                        focus.focus();
-                        if (event.button == PointerEventButton.left) {
-                            root.background-pressed();
-                        } else if (event.button == PointerEventButton.right) {
-                            root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                        }
-                    }
-                }
-            }
-
-            list := ListView {
+            marquee := MarqueeArea {
                 width: parent.width;
                 height: parent.height;
-
-                for line in root.lines: Rectangle {
-                    height: root.cell-height;
-
-                    TouchArea {
-                        pointer-event(event) => {
-                            if (event.kind == PointerEventKind.down) {
-                                focus.focus();
-                                if (event.button == PointerEventButton.left) {
-                                    root.background-pressed();
-                                } else if (event.button == PointerEventButton.right) {
-                                    root.background-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
-                                }
-                            }
-                        }
+                scroll-x: list.content-x;
+                scroll-y <=> list.content-y;
+                scroll-limit: min(0px, list.visible-height - list.content-height);
+                touched => { focus.focus(); }
+                background-pressed => { root.background-pressed(); }
+                background-menu(x, y) => { root.background-menu(x, y); }
+                started(additive) => { root.marquee-started(additive); }
+                changed(left, top, right, bottom) => {
+                    let lines = { start: top, end: bottom, pitch: root.cell-height, inset: Theme.item-inset };
+                    let columns = { start: left - root.gutter, end: right - root.gutter, pitch: root.cell-width, inset: Theme.tile-inset };
+                    if (root.column-major) {
+                        root.marquee-changed(columns, lines, root.lines);
+                    } else {
+                        root.marquee-changed(lines, columns, root.columns);
                     }
+                }
+                items-dropped(copy) => {
+                    if (root.drop-index >= 0) {
+                        root.items-dropped(root.drop-index, copy);
+                    }
+                }
 
-                    for column in root.columns: slot := Rectangle {
-                        property <int> index: root.index-at(line, column);
+                list := ListView {
+                    width: parent.width;
+                    height: parent.height;
 
-                        x: root.gutter + column * root.cell-width;
-                        width: root.cell-width;
+                    for line in root.lines: Rectangle {
+                        height: root.cell-height;
 
-                        if slot.index < root.rows.length: GridCell {
-                            width: parent.width;
-                            height: parent.height;
-                            data: root.rows[slot.index];
-                            icon-size: root.icon-size;
-                            stacked: root.stacked;
-                            tile: root.tiles;
-                            renaming: rename-box.active && root.rename-index == slot.index;
-                            pressed(control, shift) => {
-                                focus.focus();
-                                root.row-pressed(slot.index, control, shift);
+                        for column in root.columns: slot := Rectangle {
+                            property <int> index: root.index-at(line, column);
+
+                            x: root.gutter + column * root.cell-width;
+                            width: root.cell-width;
+
+                            if slot.index < root.rows.length: GridCell {
+                                width: parent.width;
+                                height: parent.height;
+                                data: root.rows[slot.index];
+                                icon-size: root.icon-size;
+                                stacked: root.stacked;
+                                tile: root.tiles;
+                                renaming: rename-box.active && root.rename-index == slot.index;
+                                drop-target: root.drop-index == slot.index;
+                                drag-cursor: root.drag-cursor;
+                                touched => { focus.focus(); }
+                                pressed(control, shift) => { root.row-pressed(slot.index, control, shift); }
+                                right-pressed(x, y) => { root.row-menu(slot.index, x, y); }
+                                activated => { root.row-activated(slot.index); }
+                                drag-started(selecting, x, y) => {
+                                    root.drag-source = slot.index;
+                                    marquee.item-drag-started(selecting, x, y);
+                                }
+                                drag-moved(x, y, copy) => { marquee.item-drag-moved(x, y, copy); }
+                                drag-ended(copy) => { marquee.item-drag-ended(copy); }
+                                drag-cancelled => { marquee.cancel(); }
                             }
-                            right-pressed(x, y) => {
-                                focus.focus();
-                                root.row-menu(slot.index, x, y);
-                            }
-                            activated => { root.row-activated(slot.index); }
                         }
                     }
                 }
@@ -318,6 +352,18 @@ export component FileGrid {
                 height: parent.height;
                 message: root.empty-message;
             }
+        }
+
+        if marquee.dragging-items: DragPreview {
+            width: parent.width;
+            height: parent.height;
+            pointer-x: marquee.absolute-position.x + marquee.local-x - self.absolute-position.x;
+            pointer-y: marquee.absolute-position.y + marquee.local-y - self.absolute-position.y;
+            icon: root.rows[root.drag-source].icon;
+            folder: root.rows[root.drag-source].folder;
+            count: root.drag-count;
+            copy: marquee.drag-copy;
+            target: root.drop-index >= 0 ? root.rows[root.drop-index].cells[0] : "";
         }
     }
 }

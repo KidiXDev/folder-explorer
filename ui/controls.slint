@@ -707,6 +707,304 @@ export component DimLabel inherits Text {
     overflow: elide;
 }
 
+export component MarqueeArea inherits TouchArea {
+    in property <length> scroll-x;
+    in-out property <length> scroll-y;
+    in property <length> scroll-limit;
+    callback touched();
+    callback background-pressed();
+    callback background-menu(x: length, y: length);
+    callback started(additive: bool);
+    callback changed(left: length, top: length, right: length, bottom: length);
+    callback items-dropped(copy: bool);
+
+    out property <bool> dragging-items;
+    out property <bool> drag-copy;
+    out property <bool> dragging: root.dragging-items || root.active;
+    out property <length> local-x;
+    out property <length> local-y;
+    property <bool> armed;
+    property <bool> active;
+    property <bool> additive;
+    property <length> origin-x;
+    property <length> origin-y;
+    property <length> pointer-x: root.local-x - root.scroll-x;
+    property <length> pointer-y: root.local-y - root.scroll-y;
+    property <length> drag-threshold: 4px;
+    property <length> scroll-edge: 24px;
+    property <length> scroll-step: root.local-y < root.scroll-edge ? (root.local-y - root.scroll-edge) / 4
+        : root.local-y > root.height - root.scroll-edge ? (root.local-y - root.height + root.scroll-edge) / 4
+        : 0px;
+
+    function report() {
+        root.changed(min(root.origin-x, root.pointer-x), min(root.origin-y, root.pointer-y),
+            max(root.origin-x, root.pointer-x), max(root.origin-y, root.pointer-y));
+    }
+
+    function begin(x: length, y: length, additive: bool) {
+        root.local-x = x;
+        root.local-y = y;
+        root.armed = true;
+        root.additive = additive;
+        root.origin-x = root.pointer-x;
+        root.origin-y = root.pointer-y;
+    }
+
+    function track(x: length, y: length) {
+        root.local-x = x;
+        root.local-y = y;
+        if (root.armed && !root.active
+            && (abs(root.pointer-x - root.origin-x) > root.drag-threshold || abs(root.pointer-y - root.origin-y) > root.drag-threshold)) {
+            root.active = true;
+            root.started(root.additive);
+        }
+        if (root.active) {
+            root.report();
+        }
+    }
+
+    public function cancel() {
+        root.armed = false;
+        root.active = false;
+        root.dragging-items = false;
+    }
+
+    public function item-drag-started(marquee: bool, x: length, y: length) {
+        if (marquee) {
+            root.begin(x - root.absolute-position.x, y - root.absolute-position.y, true);
+        } else {
+            root.dragging-items = true;
+            root.drag-copy = false;
+        }
+    }
+
+    public function item-drag-moved(x: length, y: length, copy: bool) {
+        root.drag-copy = copy;
+        root.track(x - root.absolute-position.x, y - root.absolute-position.y);
+    }
+
+    public function item-drag-ended(copy: bool) {
+        if (root.dragging-items) {
+            root.items-dropped(copy);
+        }
+        root.cancel();
+    }
+
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            root.touched();
+            if (event.button == PointerEventButton.left) {
+                root.begin(self.mouse-x, self.mouse-y, event.modifiers.control);
+                if (!root.additive) {
+                    root.background-pressed();
+                }
+            } else if (event.button == PointerEventButton.right) {
+                root.background-menu(root.absolute-position.x + root.mouse-x, root.absolute-position.y + root.mouse-y);
+            }
+        } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+            root.cancel();
+        }
+    }
+
+    moved => { root.track(self.mouse-x, self.mouse-y); }
+
+    @children
+
+    Timer {
+        interval: 16ms;
+        running: root.dragging && root.scroll-step != 0px;
+        triggered => {
+            let target = clamp(root.scroll-y - root.scroll-step, root.scroll-limit, 0px);
+            if (target != root.scroll-y) {
+                root.scroll-y = target;
+                if (root.active) {
+                    root.report();
+                }
+            }
+        }
+    }
+
+    if root.active: Rectangle {
+        x: min(root.origin-x, root.pointer-x) + root.scroll-x;
+        y: min(root.origin-y, root.pointer-y) + root.scroll-y;
+        width: abs(root.pointer-x - root.origin-x);
+        height: abs(root.pointer-y - root.origin-y);
+        background: Theme.selected-border;
+        border-width: 1px;
+        border-color: Theme.accent;
+    }
+}
+
+export component ItemTouchArea inherits TouchArea {
+    in property <bool> selected;
+    in property <MouseCursor> drag-cursor;
+    callback touched();
+    callback item-pressed(control: bool, shift: bool);
+    callback right-pressed(x: length, y: length);
+    callback drag-started(marquee: bool, x: length, y: length);
+    callback drag-moved(x: length, y: length, copy: bool);
+    callback drag-ended(copy: bool);
+    callback drag-cancelled();
+
+    property <bool> armed;
+    property <bool> dragging;
+    property <bool> marquee;
+    property <bool> deferred;
+    property <bool> copy;
+    property <length> drag-threshold: 4px;
+    property <length> pointer-x: root.absolute-position.x + root.mouse-x;
+    property <length> pointer-y: root.absolute-position.y + root.mouse-y;
+
+    mouse-cursor: root.dragging && !root.marquee ? root.drag-cursor : MouseCursor.default;
+
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            root.touched();
+            if (event.button == PointerEventButton.left) {
+                root.armed = true;
+                root.dragging = false;
+                root.marquee = event.modifiers.control;
+                root.deferred = root.selected && !event.modifiers.control && !event.modifiers.shift;
+                if (!root.deferred) {
+                    root.item-pressed(event.modifiers.control, event.modifiers.shift);
+                }
+            } else if (event.button == PointerEventButton.right) {
+                root.right-pressed(root.pointer-x, root.pointer-y);
+            }
+        } else if (event.kind == PointerEventKind.move) {
+            root.copy = event.modifiers.control;
+        } else if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left) {
+            if (root.dragging) {
+                root.drag-ended(event.modifiers.control);
+            } else if (root.armed && root.deferred) {
+                root.item-pressed(false, false);
+            }
+            root.armed = false;
+            root.dragging = false;
+        } else if (event.kind == PointerEventKind.cancel) {
+            if (root.dragging) {
+                root.drag-cancelled();
+            }
+            root.armed = false;
+            root.dragging = false;
+        }
+    }
+
+    moved => {
+        if (root.armed && !root.dragging
+            && (abs(root.mouse-x - root.pressed-x) > root.drag-threshold || abs(root.mouse-y - root.pressed-y) > root.drag-threshold)) {
+            root.dragging = true;
+            root.drag-started(root.marquee, root.absolute-position.x + root.pressed-x, root.absolute-position.y + root.pressed-y);
+        }
+        if (root.dragging) {
+            root.drag-moved(root.pointer-x, root.pointer-y, root.copy);
+        }
+    }
+}
+
+component DragCard inherits Rectangle {
+    width: 96px;
+    height: 96px;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.flyout-border;
+    background: Theme.flyout;
+    drop-shadow-blur: 14px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: Theme.drag-shadow;
+}
+
+export component DragPreview {
+    in property <image> icon;
+    in property <bool> folder;
+    in property <int> count;
+    in property <bool> copy;
+    in property <string> target;
+    in property <length> pointer-x;
+    in property <length> pointer-y;
+
+    property <length> card-x: root.pointer-x - 36px;
+    property <length> card-y: root.pointer-y - 104px;
+    property <int> crisp-icon-pixels: 48;
+
+    if root.count > 1: DragCard {
+        x: root.card-x + 6px;
+        y: root.card-y - 6px;
+        opacity: 0.6;
+    }
+
+    DragCard {
+        x: root.card-x;
+        y: root.card-y;
+        opacity: 0.92;
+
+        FileIcon {
+            width: 64px;
+            height: 64px;
+            icon: root.icon.width >= root.crisp-icon-pixels ? root.icon : @image-url("");
+            folder: root.folder;
+        }
+    }
+
+    if root.count > 1: Rectangle {
+        x: root.card-x + 96px - self.width / 2;
+        y: root.card-y - self.height / 2;
+        width: max(20px, badge-text.preferred-width + 10px);
+        height: 20px;
+        border-radius: 10px;
+        background: Theme.accent;
+
+        badge-text := Text {
+            text: root.count;
+            color: Palette.accent-foreground;
+            font-size: Theme.small-text-size;
+            font-weight: 600;
+        }
+    }
+
+    if root.target != "": Rectangle {
+        x: root.pointer-x + 4px;
+        y: root.pointer-y + 20px;
+        width: hint.preferred-width;
+        height: 24px;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.flyout-border;
+        background: Theme.flyout;
+        drop-shadow-blur: 6px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: Theme.drag-shadow;
+
+        hint := HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 8px;
+            spacing: 5px;
+
+            Image {
+                source: root.copy ? @image-url("icons/plus.svg") : @image-url("icons/forward.svg");
+                width: 12px;
+                colorize: Theme.text;
+            }
+
+            Text {
+                text: root.copy ? "Copy to" : "Move to";
+                color: Theme.text;
+                font-size: Theme.small-text-size;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.target;
+                color: Theme.accent;
+                font-size: Theme.small-text-size;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 240px;
+            }
+        }
+    }
+}
+
 export component EmptyState {
     in property <string> message;
     in property <image> icon: @image-url("icons/folder.svg");
