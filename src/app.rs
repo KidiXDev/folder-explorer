@@ -64,6 +64,7 @@ enum Message {
     TreeChildren { parent: PathBuf, folders: Vec<(OsString, u32)> },
     Listed { scan: u64, items: Vec<Item>, lives: Arc<Vec<Live>> },
     Unreadable { scan: u64, reason: String },
+    Missing { scan: u64, path: PathBuf, fallback: Option<PathBuf>, reason: String },
     Disk { scan: u64, title: String, usage: Option<DiskUsage> },
     Sized { scan: u64, index: usize, node: Arc<DirNode> },
     Finished {
@@ -140,7 +141,12 @@ fn scan_folder(
     let Level { mut node, subdirs } = match SubDir::at(&path).and_then(|root| read_level(&root)) {
         Ok(level) => level,
         Err(error) => {
-            let _ = sender.send(Message::Unreadable { scan, reason: describe_error(&path, &error) });
+            let reason = describe_error(&path, &error);
+            let message = match error.kind() {
+                io::ErrorKind::NotFound => Message::Missing { scan, fallback: nearest_existing(&path), path, reason },
+                _ => Message::Unreadable { scan, reason },
+            };
+            let _ = sender.send(message);
             return;
         }
     };
@@ -183,6 +189,18 @@ fn describe_error(path: &Path, error: &io::Error) -> String {
         io::ErrorKind::NotFound => format!("{} does not exist.", path.display()),
         io::ErrorKind::PermissionDenied => format!("You don't have permission to open {}.", path.display()),
         _ => format!("Can't open {}: {error}", path.display()),
+    }
+}
+
+fn nearest_existing(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|ancestor| ancestor.is_dir()).map(Path::to_path_buf)
+}
+
+fn prune_history(history: &mut Vec<Location>, missing: &Path, current: &Location) {
+    history.retain(|location| !matches!(location, Location::Folder(path) if path.starts_with(missing)));
+    history.dedup();
+    while history.last() == Some(current) {
+        history.pop();
     }
 }
 
@@ -365,6 +383,9 @@ impl App {
             }
             Message::Listed { scan, items, lives } if scan == self.scan_id => self.on_listed(items, lives),
             Message::Unreadable { scan, reason } if scan == self.scan_id => self.on_unreadable(reason),
+            Message::Missing { scan, path, fallback, reason } if scan == self.scan_id => {
+                self.on_missing(&path, fallback, reason);
+            }
             Message::Disk { scan, title, usage } if scan == self.scan_id => self.on_disk(&title, usage),
             Message::Sized { scan, index, node } if scan == self.scan_id && !self.showing_results => {
                 self.list.update_item(index, |item| item.apply_totals(&node));
@@ -589,6 +610,16 @@ impl App {
         ui.set_list_message(reason.into());
         ui.set_status_activity(SharedString::new());
         self.sync_busy();
+    }
+
+    fn on_missing(&mut self, missing: &Path, fallback: Option<PathBuf>, reason: String) {
+        self.forget(missing);
+        self.refresh_tree(fallback.as_deref());
+        self.location = fallback.map_or(Location::Computer, Location::Folder);
+        prune_history(&mut self.back, missing, &self.location);
+        prune_history(&mut self.forward, missing, &self.location);
+        self.show_location();
+        Timer::single_shot(Duration::ZERO, move || platform::alert("Location is not available", &reason));
     }
 
     fn on_disk(&self, title: &str, usage: Option<DiskUsage>) {
@@ -1889,5 +1920,72 @@ mod tests {
     fn missing_folders_read_plainly() {
         let error = io::Error::from(io::ErrorKind::NotFound);
         assert_eq!(describe_error(Path::new(r"C:\gone"), &error), r"C:\gone does not exist.");
+    }
+
+    fn folder(path: &str) -> Location {
+        Location::Folder(PathBuf::from(path))
+    }
+
+    #[test]
+    fn history_forgets_a_missing_folder_and_everything_below_it() {
+        let mut back = vec![
+            Location::Computer,
+            folder(r"C:\a"),
+            folder(r"C:\a\b"),
+            folder(r"C:\a\b\c"),
+            folder(r"C:\a\bc"),
+            folder(r"C:\a"),
+        ];
+        prune_history(&mut back, Path::new(r"C:\a\b"), &folder(r"C:\x"));
+        assert!(back == [Location::Computer, folder(r"C:\a"), folder(r"C:\a\bc"), folder(r"C:\a")]);
+    }
+
+    #[test]
+    fn pruned_history_never_repeats_the_fallback_or_its_neighbours() {
+        let mut back = vec![folder(r"C:\a"), folder(r"C:\a\b"), folder(r"C:\a"), folder(r"C:\a\b")];
+        prune_history(&mut back, Path::new(r"C:\a\b"), &folder(r"C:\a"));
+        assert!(back.is_empty());
+        let mut forward = vec![folder(r"C:\y"), folder(r"C:\y"), folder(r"C:\a\b\c")];
+        prune_history(&mut forward, Path::new(r"C:\a\b"), &folder(r"C:\a"));
+        assert!(forward == [folder(r"C:\y")]);
+    }
+
+    #[test]
+    fn going_back_to_a_deleted_folder_lands_on_its_parent_without_a_dead_history() {
+        let tree = TempTree::new();
+        tree.file(r"kept\file.txt", 1);
+        let (kept, gone) = (tree.0.join("kept"), tree.0.join(r"kept\gone"));
+        let (ui, shared) = headless_app();
+        let mut app = shared.borrow_mut();
+        app.back = vec![Location::Computer, Location::Folder(gone.clone()), Location::Folder(kept.clone())];
+        app.location = Location::Folder(gone.clone());
+        let scan = app.scan_id;
+        app.handle(Message::Missing { scan, path: gone, fallback: Some(kept.clone()), reason: String::new() });
+        assert!(app.location == Location::Folder(kept));
+        assert!(app.back == [Location::Computer]);
+        assert!(ui.get_can_go_back() && !ui.get_can_go_forward());
+    }
+
+    #[test]
+    fn a_missing_folder_falls_back_to_its_nearest_existing_ancestor() {
+        let tree = TempTree::new();
+        tree.file(r"kept\file.txt", 1);
+        let missing = tree.0.join(r"kept\gone\deeper");
+        assert_eq!(nearest_existing(&missing), Some(tree.0.join("kept")));
+    }
+
+    #[test]
+    fn a_missing_folder_reports_its_fallback_instead_of_an_error() {
+        let tree = TempTree::new();
+        let (sender, receiver) = mpsc::channel();
+        let missing = tree.0.join("gone");
+        scan_folder(7, 0, missing.clone(), HashMap::new(), Arc::default(), sender);
+        match receiver.recv().unwrap() {
+            Message::Missing { scan, path, fallback, reason } => {
+                assert_eq!((scan, path, fallback), (7, missing.clone(), Some(tree.0.clone())));
+                assert_eq!(reason, format!("{} does not exist.", missing.display()));
+            }
+            _ => panic!("expected a missing-folder message"),
+        }
     }
 }
